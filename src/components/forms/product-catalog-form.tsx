@@ -1,55 +1,58 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
-// Battery Variant Definitions (9 Specs x 2 IOT Statuses)
-const batterySpecs = [
-    { volts: '51.2', amp_hours: '105' },
-    { volts: '48', amp_hours: '40' },
-    { volts: '60', amp_hours: '30' },
-    { volts: '60', amp_hours: '50' },
-    { volts: '72', amp_hours: '50' },
-    { volts: '48', amp_hours: '100' },
-    { volts: '60', amp_hours: '100' },
-    { volts: '72', amp_hours: '100' },
-    { volts: '51.2', amp_hours: '80' },
-];
-
-const iotStatuses = ['With IOT', 'Without IOT'];
-
 export default function ProductCatalogForm() {
     const queryClient = useQueryClient();
     const [formData, setFormData] = useState({
+        name: '',
+        slug: '',
+        category_id: '',
         hsn_code: '',
-        asset_category: '',
+        sku: '',
         asset_type: '',
-        iot_status: '',
-        technical_spec: '',
-        model_type: '',
+        voltage_v: '',
+        capacity_ah: '',
         is_serialized: true,
         warranty_months: 36,
+        sort_order: 0,
     });
 
     const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
+    const { data: categoriesData } = useQuery({
+        queryKey: ['product-categories'],
+        queryFn: () => fetch('/api/inventory/categories').then(r => r.json()),
+    });
+    const categories: { id: string; name: string; slug: string }[] = categoriesData?.data || [];
+
+    // Auto-generate slug from name
     useEffect(() => {
-        if (formData.asset_category === '3W' && formData.asset_type === 'Battery' && formData.iot_status && formData.technical_spec) {
-            setFormData(prev => ({ ...prev, model_type: `${formData.iot_status} ${formData.technical_spec}` }));
-        } else if (formData.asset_category === '3W' && formData.asset_type === 'Charger') {
-            setFormData(prev => ({ ...prev, model_type: '3W Standalone Charger' }));
+        if (formData.name) {
+            setFormData(prev => ({
+                ...prev,
+                slug: formData.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+            }));
         }
-    }, [formData.asset_category, formData.asset_type, formData.iot_status, formData.technical_spec]);
+    }, [formData.name]);
 
     const createMutation = useMutation({
         mutationFn: async (data: any) => {
+            const payload = {
+                ...data,
+                voltage_v: data.voltage_v ? Number(data.voltage_v) : undefined,
+                capacity_ah: data.capacity_ah ? Number(data.capacity_ah) : undefined,
+                warranty_months: Number(data.warranty_months),
+                sort_order: Number(data.sort_order),
+            };
             const res = await fetch('/api/product-catalog', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data),
+                body: JSON.stringify(payload),
             });
             if (!res.ok) {
                 const error = await res.json();
@@ -61,14 +64,17 @@ export default function ProductCatalogForm() {
             setMessage({ type: 'success', text: 'Product created successfully!' });
             queryClient.invalidateQueries({ queryKey: ['product-catalog'] });
             setFormData({
+                name: '',
+                slug: '',
+                category_id: '',
                 hsn_code: '',
-                asset_category: '',
+                sku: '',
                 asset_type: '',
-                iot_status: '',
-                technical_spec: '',
-                model_type: '',
+                voltage_v: '',
+                capacity_ah: '',
                 is_serialized: true,
                 warranty_months: 36,
+                sort_order: 0,
             });
         },
         onError: (error: any) => {
@@ -97,50 +103,45 @@ export default function ProductCatalogForm() {
 
                 <div className="grid grid-cols-2 gap-6">
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">HSN Code</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Product Name</label>
                         <Input
-                            placeholder="e.g. 85076000"
-                            maxLength={8}
-                            value={formData.hsn_code}
-                            onChange={(e) => setFormData(prev => ({ ...prev, hsn_code: e.target.value }))}
+                            placeholder="e.g. 3W Battery 51V 105AH"
+                            value={formData.name}
+                            onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
                             required
                         />
                     </div>
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">Warranty (Months)</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">SKU</label>
                         <Input
-                            type="number"
-                            value={formData.warranty_months}
-                            onChange={(e) => setFormData(prev => ({ ...prev, warranty_months: parseInt(e.target.value) }))}
-                            required
+                            placeholder="e.g. 3W-51V-105AH"
+                            value={formData.sku}
+                            onChange={(e) => setFormData(prev => ({ ...prev, sku: e.target.value }))}
                         />
                     </div>
                 </div>
 
                 <div className="grid grid-cols-2 gap-6">
                     <div>
-                        <label className="block text-sm font-semibold text-gray-700 mb-2">Asset Category</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Category</label>
                         <select
-                            className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 transition-all font-medium"
-                            value={formData.asset_category}
-                            onChange={(e) => setFormData(prev => ({ ...prev, asset_category: e.target.value, asset_type: '' }))}
+                            className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                            value={formData.category_id}
+                            onChange={(e) => setFormData(prev => ({ ...prev, category_id: e.target.value }))}
                             required
                         >
                             <option value="">Select Category</option>
-                            <option value="3W">3W (Cargo/Riks)</option>
-                            <option value="2W">2W (Scooter)</option>
-                            <option value="Inverter">Inverter (Home/Ind)</option>
+                            {categories.map(cat => (
+                                <option key={cat.id} value={cat.id}>{cat.name}</option>
+                            ))}
                         </select>
                     </div>
-
                     <div>
                         <label className="block text-sm font-semibold text-gray-700 mb-2">Asset Type</label>
                         <select
-                            className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 transition-all font-medium disabled:opacity-50"
+                            className="flex h-10 w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                             value={formData.asset_type}
                             onChange={(e) => setFormData(prev => ({ ...prev, asset_type: e.target.value }))}
-                            required
-                            disabled={!formData.asset_category}
                         >
                             <option value="">Select Type</option>
                             <option value="Battery">Battery</option>
@@ -152,53 +153,54 @@ export default function ProductCatalogForm() {
                     </div>
                 </div>
 
-                {formData.asset_type === 'Battery' && (
-                    <div className="bg-brand-50 p-6 rounded-2xl space-y-4 border border-brand-100">
-                        <h3 className="text-sm font-bold text-brand-800 uppercase tracking-wider">Battery Configuration</h3>
-
-                        <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <label className="block text-xs font-semibold text-brand-900 mb-1.5 uppercase">IOT Status</label>
-                                <select
-                                    className="w-full bg-white border border-brand-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                                    value={formData.iot_status}
-                                    onChange={(e) => setFormData(prev => ({ ...prev, iot_status: e.target.value }))}
-                                    required
-                                >
-                                    <option value="">Select Status</option>
-                                    {iotStatuses.map(status => (
-                                        <option key={status} value={status}>{status}</option>
-                                    ))}
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-semibold text-brand-900 mb-1.5 uppercase">Voltage - Capacity</label>
-                                <select
-                                    className="w-full bg-white border border-brand-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-                                    value={formData.technical_spec}
-                                    onChange={(e) => setFormData(prev => ({ ...prev, technical_spec: e.target.value }))}
-                                    required
-                                >
-                                    <option value="">Select Spec</option>
-                                    {batterySpecs.map((spec, idx) => {
-                                        const val = `${spec.volts} V-${spec.amp_hours}AH`;
-                                        return <option key={idx} value={val}>{val}</option>;
-                                    })}
-                                </select>
-                            </div>
-                        </div>
+                <div className="grid grid-cols-3 gap-4">
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">HSN Code</label>
+                        <Input
+                            placeholder="85076000"
+                            maxLength={8}
+                            value={formData.hsn_code}
+                            onChange={(e) => setFormData(prev => ({ ...prev, hsn_code: e.target.value }))}
+                        />
                     </div>
-                )}
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Voltage (V)</label>
+                        <Input
+                            type="number"
+                            placeholder="e.g. 51"
+                            value={formData.voltage_v}
+                            onChange={(e) => setFormData(prev => ({ ...prev, voltage_v: e.target.value }))}
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Capacity (AH)</label>
+                        <Input
+                            type="number"
+                            placeholder="e.g. 105"
+                            value={formData.capacity_ah}
+                            onChange={(e) => setFormData(prev => ({ ...prev, capacity_ah: e.target.value }))}
+                        />
+                    </div>
+                </div>
 
-                <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Model Type Name</label>
-                    <Input
-                        value={formData.model_type}
-                        onChange={(e) => setFormData(prev => ({ ...prev, model_type: e.target.value }))}
-                        placeholder="e.g. Smart LFP Battery 51.2V"
-                        required
-                    />
+                <div className="grid grid-cols-2 gap-6">
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Warranty (Months)</label>
+                        <Input
+                            type="number"
+                            value={formData.warranty_months}
+                            onChange={(e) => setFormData(prev => ({ ...prev, warranty_months: parseInt(e.target.value) }))}
+                            required
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Sort Order</label>
+                        <Input
+                            type="number"
+                            value={formData.sort_order}
+                            onChange={(e) => setFormData(prev => ({ ...prev, sort_order: parseInt(e.target.value) }))}
+                        />
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-2 pt-2">

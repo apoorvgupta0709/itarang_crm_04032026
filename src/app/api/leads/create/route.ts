@@ -1,3 +1,5 @@
+import { NextResponse } from 'next/server';
+import crypto from 'crypto';
 import { db } from '@/lib/db';
 import { leads, personalDetails, auditLogs, accounts } from '@/lib/db/schema';
 import { successResponse, errorResponse, withErrorHandler, generateId } from '@/lib/api-utils';
@@ -24,8 +26,13 @@ const step1Schema = z.object({
     interested_in: z.array(z.string()).optional(),
     initializeDraft: z.boolean().optional(),
     commitStep: z.boolean().optional(),
-    leadId: z.string().optional()
-});
+    leadId: z.string().optional().nullable(),
+    lead_score: z.number().optional().nullable(),
+    additional_products: z.array(z.any()).optional(),
+    asset_model: z.string().optional().nullable(),
+    asset_model_label: z.string().optional().nullable(),
+    is_vehicle_category: z.boolean().optional(),
+}).passthrough();
 
 async function generateLeadReference() {
     const year = new Date().getFullYear();
@@ -70,7 +77,16 @@ export const POST = withErrorHandler(async (req: Request) => {
 
     const body = await req.json();
     const result = step1Schema.safeParse(body);
-    if (!result.success) return errorResponse('Validation failed', 400);
+    if (!result.success) {
+        console.error('[leads/create] Zod validation failed:', JSON.stringify(result.error.issues));
+        return NextResponse.json({
+            success: false,
+            error: {
+                message: 'Validation failed',
+                details: result.error.issues.map(i => ({ path: i.path.join('.'), message: i.message, received: i.code }))
+            }
+        }, { status: 400 });
+    }
     const data = result.data;
 
     // MODE 1: INITIALIZE DRAFT
@@ -125,6 +141,7 @@ export const POST = withErrorHandler(async (req: Request) => {
                     owner_contact: 'DRAFT',
                 });
                 await tx.insert(personalDetails).values({
+                    id: crypto.randomUUID(),
                     lead_id: leadId,
                     dob: null,
                     father_husband_name: null

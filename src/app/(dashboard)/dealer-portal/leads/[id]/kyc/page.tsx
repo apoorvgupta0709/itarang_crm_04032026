@@ -341,6 +341,142 @@ export default function KYCPage() {
         }
     };
 
+    // ── Decentro Handlers ────────────────────────────────────────────────────
+
+    const handlePanVerify = async () => {
+        if (!panNumber.trim()) return;
+        setPanVerifying(true);
+        setPanResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/pan`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pan_number: panNumber.trim() }),
+            });
+            const data = await res.json();
+            setPanResult({ success: data.success, message: data.message, data: data.data });
+            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+            const verData = await verRes.json();
+            if (verData.success) setVerifications(verData.data);
+        } catch {
+            setPanResult({ success: false, message: 'Request failed' });
+        } finally {
+            setPanVerifying(false);
+        }
+    };
+
+    const handleAadhaarSendOtp = async () => {
+        if (!aadhaarNumber.trim()) return;
+        setAadhaarVerifying(true);
+        setAadhaarResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-otp`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ aadhaar_number: aadhaarNumber.trim() }),
+            });
+            const data = await res.json();
+            if (data.success && data.decentroTxnId) {
+                setAadhaarTxnId(data.decentroTxnId);
+                setAadhaarStep('otp');
+                setAadhaarResult({ success: true, message: 'OTP sent to Aadhaar-linked mobile' });
+            } else {
+                setAadhaarResult({ success: false, message: data.message || 'Failed to send OTP' });
+            }
+        } catch {
+            setAadhaarResult({ success: false, message: 'Request failed' });
+        } finally {
+            setAadhaarVerifying(false);
+        }
+    };
+
+    const handleAadhaarVerifyOtp = async () => {
+        if (!aadhaarOtp.trim() || !aadhaarTxnId) return;
+        setAadhaarVerifying(true);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-verify`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ decentro_txn_id: aadhaarTxnId, otp: aadhaarOtp.trim() }),
+            });
+            const data = await res.json();
+            setAadhaarResult({ success: data.success, message: data.message });
+            if (data.success) {
+                setAadhaarStep('input');
+                const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+                const verData = await verRes.json();
+                if (verData.success) setVerifications(verData.data);
+            }
+        } catch {
+            setAadhaarResult({ success: false, message: 'Request failed' });
+        } finally {
+            setAadhaarVerifying(false);
+        }
+    };
+
+    const handleBankVerify = async () => {
+        if (!bankAccountNo.trim() || !bankIfsc.trim()) return;
+        setBankVerifying(true);
+        setBankResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/decentro/bank`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    account_number: bankAccountNo.trim(),
+                    ifsc: bankIfsc.trim(),
+                    name: bankName.trim() || undefined,
+                    perform_name_match: !!bankName.trim(),
+                }),
+            });
+            const data = await res.json();
+            setBankResult({ success: data.success, message: data.message, data: data.data });
+            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
+            const verData = await verRes.json();
+            if (verData.success) setVerifications(verData.data);
+        } catch {
+            setBankResult({ success: false, message: 'Request failed' });
+        } finally {
+            setBankVerifying(false);
+        }
+    };
+
+    const handleOcrExtract = async () => {
+        if (!ocrFile) return;
+        setOcrExtracting(true);
+        setOcrResult(null);
+        try {
+            const form = new FormData();
+            form.append('file', ocrFile);
+            form.append('document_type', ocrDocType);
+            const res = await fetch(`/api/kyc/${leadId}/decentro/ocr`, { method: 'POST', body: form });
+            const data = await res.json();
+            setOcrResult({ success: data.success, message: data.message, data: data.data });
+        } catch {
+            setOcrResult({ success: false, message: 'Request failed' });
+        } finally {
+            setOcrExtracting(false);
+        }
+    };
+
+    const handleFaceMatch = async () => {
+        if (!faceImg1 || !faceImg2) return;
+        setFaceMatching(true);
+        setFaceResult(null);
+        try {
+            const form = new FormData();
+            form.append('image1', faceImg1);
+            form.append('image2', faceImg2);
+            const res = await fetch(`/api/kyc/${leadId}/decentro/face-match`, { method: 'POST', body: form });
+            const data = await res.json();
+            setFaceResult({ success: data.success, message: data.message, match_score: data.match_score, is_match: data.is_match });
+        } catch {
+            setFaceResult({ success: false, message: 'Request failed' });
+        } finally {
+            setFaceMatching(false);
+        }
+    };
+
     // Save Draft
     const handleSaveDraft = async (auto = false) => {
         setSaving(true);
@@ -688,6 +824,217 @@ export default function KYCPage() {
                         </SectionCard>
                     )}
                 </main>
+
+                {/* ── DECENTRO IDENTITY VERIFICATION ─────────────────────────── */}
+                <SectionCard title="Identity Verification (Decentro)">
+                    <p className="text-xs text-gray-400 mb-6">Run real-time checks via Decentro's staging API before submitting for full verification.</p>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                        {/* PAN Verification */}
+                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                                <CreditCard className="w-4 h-4 text-[#0047AB]" /> PAN Verification
+                            </h4>
+                            <div className="flex gap-2">
+                                <input
+                                    value={panNumber}
+                                    onChange={e => { setPanNumber(e.target.value.toUpperCase().slice(0, 10)); setPanResult(null); }}
+                                    placeholder="ABCDE1234F"
+                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase"
+                                    maxLength={10}
+                                />
+                                <button
+                                    onClick={handlePanVerify}
+                                    disabled={panVerifying || panNumber.length !== 10}
+                                    className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
+                                >
+                                    {panVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />}
+                                    Verify
+                                </button>
+                            </div>
+                            {panResult && (
+                                <div className={`p-3 rounded-xl text-xs font-medium ${panResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                    {panResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                    {panResult.message}
+                                    {panResult.data?.name && <div className="mt-1 font-bold">Name: {panResult.data.name}</div>}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Aadhaar Verification */}
+                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                                <Shield className="w-4 h-4 text-[#0047AB]" /> Aadhaar Verification (OTP)
+                            </h4>
+                            {aadhaarStep === 'input' ? (
+                                <div className="flex gap-2">
+                                    <input
+                                        value={aadhaarNumber}
+                                        onChange={e => { setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12)); setAadhaarResult(null); }}
+                                        placeholder="12-digit Aadhaar"
+                                        className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
+                                        maxLength={12}
+                                    />
+                                    <button
+                                        onClick={handleAadhaarSendOtp}
+                                        disabled={aadhaarVerifying || aadhaarNumber.length !== 12}
+                                        className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
+                                    >
+                                        {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                                        Send OTP
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    <div className="flex gap-2">
+                                        <input
+                                            value={aadhaarOtp}
+                                            onChange={e => setAadhaarOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                            placeholder="Enter 6-digit OTP"
+                                            className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
+                                            maxLength={6}
+                                        />
+                                        <button
+                                            onClick={handleAadhaarVerifyOtp}
+                                            disabled={aadhaarVerifying || aadhaarOtp.length !== 6}
+                                            className="px-4 py-2 bg-green-600 text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
+                                        >
+                                            {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                                            Verify OTP
+                                        </button>
+                                    </div>
+                                    <button onClick={() => { setAadhaarStep('input'); setAadhaarOtp(''); }} className="text-[10px] text-gray-400 hover:text-gray-600">
+                                        ← Change Aadhaar number
+                                    </button>
+                                </div>
+                            )}
+                            {aadhaarResult && (
+                                <div className={`p-3 rounded-xl text-xs font-medium ${aadhaarResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                    {aadhaarResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                    {aadhaarResult.message}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Bank Verification */}
+                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                                <FileText className="w-4 h-4 text-[#0047AB]" /> Bank Account Verification
+                            </h4>
+                            <input
+                                value={bankAccountNo}
+                                onChange={e => { setBankAccountNo(e.target.value.replace(/\D/g, '')); setBankResult(null); }}
+                                placeholder="Account number"
+                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
+                            />
+                            <div className="flex gap-2">
+                                <input
+                                    value={bankIfsc}
+                                    onChange={e => setBankIfsc(e.target.value.toUpperCase().slice(0, 11))}
+                                    placeholder="IFSC (e.g. HDFC0001234)"
+                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase"
+                                    maxLength={11}
+                                />
+                                <input
+                                    value={bankName}
+                                    onChange={e => setBankName(e.target.value)}
+                                    placeholder="Account holder name (optional)"
+                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
+                                />
+                            </div>
+                            <button
+                                onClick={handleBankVerify}
+                                disabled={bankVerifying || !bankAccountNo || bankIfsc.length < 11}
+                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
+                            >
+                                {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                                Verify Bank Account
+                            </button>
+                            {bankResult && (
+                                <div className={`p-3 rounded-xl text-xs font-medium ${bankResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                    {bankResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                    {bankResult.message}
+                                    {bankResult.data?.bankName && <div className="mt-1 font-bold">Bank: {bankResult.data.bankName}</div>}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Document OCR */}
+                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                                <Eye className="w-4 h-4 text-[#0047AB]" /> Document OCR Extraction
+                            </h4>
+                            <select
+                                value={ocrDocType}
+                                onChange={e => { setOcrDocType(e.target.value as any); setOcrResult(null); }}
+                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
+                            >
+                                <option value="PAN">PAN Card</option>
+                                <option value="AADHAAR">Aadhaar Card</option>
+                                <option value="DRIVING_LICENSE">Driving License</option>
+                                <option value="VOTERID">Voter ID</option>
+                            </select>
+                            <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-xs font-bold cursor-pointer hover:border-[#0047AB] text-gray-500 bg-white">
+                                <Upload className="w-3.5 h-3.5" />
+                                {ocrFile ? ocrFile.name : 'Upload document (JPG/PNG/PDF, max 6MB)'}
+                                <input type="file" className="hidden" accept="image/jpeg,image/png,application/pdf" onChange={e => { setOcrFile(e.target.files?.[0] || null); setOcrResult(null); }} />
+                            </label>
+                            <button
+                                onClick={handleOcrExtract}
+                                disabled={ocrExtracting || !ocrFile}
+                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
+                            >
+                                {ocrExtracting ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
+                                Extract Data
+                            </button>
+                            {ocrResult && (
+                                <div className={`p-3 rounded-xl text-xs ${ocrResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                    {ocrResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                    {ocrResult.message}
+                                    {ocrResult.data && (
+                                        <pre className="mt-2 text-[10px] bg-white/60 p-2 rounded-lg overflow-x-auto">{JSON.stringify(ocrResult.data, null, 2)}</pre>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Face Match */}
+                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3 md:col-span-2">
+                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                                <Camera className="w-4 h-4 text-[#0047AB]" /> Face Match
+                                <span className="text-[10px] font-medium text-gray-400 ml-1">Compare selfie vs ID photo</span>
+                            </h4>
+                            <div className="grid grid-cols-2 gap-3">
+                                {([['faceImg1', faceImg1, setFaceImg1, 'Selfie / Live Photo'], ['faceImg2', faceImg2, setFaceImg2, 'ID Card Photo']] as const).map(([key, file, setter, label]) => (
+                                    <label key={key} className="flex flex-col items-center justify-center gap-2 px-4 py-6 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#0047AB] bg-white">
+                                        <Camera className="w-6 h-6 text-gray-300" />
+                                        <span className="text-xs font-bold text-gray-600 text-center">{label}</span>
+                                        {file && <span className="text-[10px] text-green-600 truncate max-w-[120px]">{(file as File).name}</span>}
+                                        <input type="file" className="hidden" accept="image/jpeg,image/png" onChange={e => { (setter as any)(e.target.files?.[0] || null); setFaceResult(null); }} />
+                                    </label>
+                                ))}
+                            </div>
+                            <button
+                                onClick={handleFaceMatch}
+                                disabled={faceMatching || !faceImg1 || !faceImg2}
+                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
+                            >
+                                {faceMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Camera className="w-3 h-3" />}
+                                Match Faces
+                            </button>
+                            {faceResult && (
+                                <div className={`p-3 rounded-xl text-xs font-medium ${faceResult.success && faceResult.is_match ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                    {faceResult.is_match ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                    {faceResult.message}
+                                    {faceResult.match_score != null && (
+                                        <span className="ml-2 font-black">Match Score: {faceResult.match_score}%</span>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </SectionCard>
 
                 {/* BOTTOM BUTTONS */}
                 <div className="sticky bottom-0 left-0 right-0 bg-[#F8F9FB] pt-4 pb-8 z-50">

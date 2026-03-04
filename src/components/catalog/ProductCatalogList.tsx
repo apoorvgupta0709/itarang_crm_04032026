@@ -5,7 +5,7 @@ import { useState, useEffect } from 'react';
 
 type Product = {
     id: string;
-    model_type: string;
+    name: string;
     asset_category: string;
     asset_type: string;
     status: string;
@@ -57,7 +57,7 @@ export default function ProductCatalogList() {
                         ) : (
                             products.map((product) => (
                                 <tr key={product.id} className="table-row-parcel group">
-                                    <td className="px-6 py-4 font-medium text-gray-900">{product.model_type}</td>
+                                    <td className="px-6 py-4 font-medium text-gray-900">{product.name}</td>
                                     <td className="px-6 py-4 text-gray-600">{product.asset_category}</td>
                                     <td className="px-6 py-4 text-gray-600">{product.asset_type}</td>
                                     <td className="px-6 py-4 text-gray-600">{product.warranty_months}</td>

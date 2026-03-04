@@ -5,9 +5,11 @@ import * as schema from '@/lib/db/schema';
 export type User = InferSelectModel<typeof schema.users>;
 export type NewUser = InferInsertModel<typeof schema.users>;
 
-// MVP Features
-export type Product = InferSelectModel<typeof schema.productCatalog>;
-export type NewProduct = InferInsertModel<typeof schema.productCatalog>;
+// Product Catalog
+export type ProductCategory = InferSelectModel<typeof schema.productCategories>;
+export type NewProductCategory = InferInsertModel<typeof schema.productCategories>;
+export type Product = InferSelectModel<typeof schema.products>;
+export type NewProduct = InferInsertModel<typeof schema.products>;
 
 export type OEM = InferSelectModel<typeof schema.oems>;
 export type NewOEM = InferInsertModel<typeof schema.oems>;

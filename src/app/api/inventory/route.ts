@@ -1,5 +1,5 @@
 import { db } from '@/lib/db';
-import { inventory, productCatalog, oems } from '@/lib/db/schema';
+import { inventory, products } from '@/lib/db/schema';
 import { eq, and, desc } from 'drizzle-orm';
 import { requireAuth } from '@/lib/auth-utils';
 import { successResponse, withErrorHandler } from '@/lib/api-utils';
@@ -10,8 +10,9 @@ export const GET = withErrorHandler(async (req: Request) => {
     const { searchParams } = new URL(req.url);
     const filters: any[] = [];
 
-    if (searchParams.get('asset_category')) {
-        filters.push(eq(productCatalog.asset_category, searchParams.get('asset_category') as any));
+    const assetCategory = searchParams.get('asset_category');
+    if (assetCategory) {
+        filters.push(eq(inventory.asset_category, assetCategory));
     }
 
     const statusParam = searchParams.get('status');
@@ -19,7 +20,7 @@ export const GET = withErrorHandler(async (req: Request) => {
         filters.push(eq(inventory.status, statusParam));
     }
 
-    // Join with product catalog to get details
+    // inventory has denormalized product fields; join products for hsn_code
     const results = await db.select({
         id: inventory.id,
         serial_number: inventory.serial_number,
@@ -27,18 +28,18 @@ export const GET = withErrorHandler(async (req: Request) => {
         inventory_amount: inventory.inventory_amount,
         gst_amount: inventory.gst_amount,
         final_amount: inventory.final_amount,
-        uploaded_at: inventory.uploaded_at,
+        created_at: inventory.created_at,
         product: {
-            hsn_code: productCatalog.hsn_code,
-            asset_category: productCatalog.asset_category,
-            asset_type: productCatalog.asset_type,
-            model_type: productCatalog.model_type,
+            hsn_code: products.hsn_code,
+            asset_category: inventory.asset_category,
+            asset_type: inventory.asset_type,
+            model_type: inventory.model_type,
         }
     })
         .from(inventory)
-        .innerJoin(productCatalog, eq(inventory.product_id, productCatalog.id))
+        .leftJoin(products, eq(inventory.product_id, products.id))
         .where(filters.length ? and(...filters) : undefined)
-        .orderBy(desc(inventory.uploaded_at));
+        .orderBy(desc(inventory.created_at));
 
     return successResponse(results);
 });

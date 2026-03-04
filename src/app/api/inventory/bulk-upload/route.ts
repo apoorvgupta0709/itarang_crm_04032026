@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { db } from '@/lib/db';
-import { inventory, productCatalog, oems } from '@/lib/db/schema';
+import { inventory, products, productCategories, oems } from '@/lib/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { requireAuth } from '@/lib/auth-utils';
 import { successResponse, withErrorHandler, generateId } from '@/lib/api-utils';
@@ -75,10 +75,24 @@ export const POST = withErrorHandler(async (req: Request) => {
                 throw new Error(`OEM '${validated.oem_name}' not found. Please register OEM first.`);
             }
 
-            // 2. Find Product
-            const product = await db.query.productCatalog.findFirst({
-                where: eq(productCatalog.hsn_code, validated.hsn_code),
-            });
+            // 2. Find Product by HSN code (join with category for asset_category)
+            const productRow = await db
+                .select({
+                    id: products.id,
+                    name: products.name,
+                    sku: products.sku,
+                    hsn_code: products.hsn_code,
+                    asset_type: products.asset_type,
+                    is_serialized: products.is_serialized,
+                    warranty_months: products.warranty_months,
+                    asset_category: productCategories.name,
+                })
+                .from(products)
+                .innerJoin(productCategories, eq(products.category_id, productCategories.id))
+                .where(eq(products.hsn_code, validated.hsn_code))
+                .limit(1);
+
+            const product = productRow[0];
             if (!product) throw new Error(`Product with HSN ${validated.hsn_code} not found in catalog`);
 
             // 3. Conditional Validations
@@ -88,9 +102,8 @@ export const POST = withErrorHandler(async (req: Request) => {
                 throw new Error('Serial number required for serialized items');
             }
 
-            // IoT items must have IMEI (Check if model_type contains "With IOT" or similar indicator)
-            // Assuming model_type follows "With IOT ..." naming convention from product catalog form
-            if (product.model_type.includes('With IOT') && !validated.iot_imei_no) {
+            // IoT items must have IMEI
+            if (product.name.includes('With IOT') && !validated.iot_imei_no) {
                 throw new Error('IMEI number required for IoT enabled products');
             }
 
@@ -107,8 +120,8 @@ export const POST = withErrorHandler(async (req: Request) => {
                 // Denormalized Fields (SOP 7.4)
                 oem_name: oem.business_entity_name,
                 asset_category: product.asset_category,
-                asset_type: product.asset_type,
-                model_type: product.model_type,
+                asset_type: product.asset_type ?? '',
+                model_type: product.name,
 
                 serial_number: validated.serial_number,
                 batch_number: validated.batch_number,

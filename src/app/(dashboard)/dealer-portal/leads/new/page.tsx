@@ -48,7 +48,9 @@ function NewLeadWizardContent() {
         vehicle_owner_name: '',
         vehicle_owner_phone: '',
         interest_level: 'hot',
-        asset_model: '', // UI tracking for category name
+        asset_model: '', // stores category slug for API calls
+        asset_model_label: '', // stores category display name
+        is_vehicle_category: false, // true for 2W/3W/4W categories
     });
 
     // Multi-product state
@@ -66,32 +68,35 @@ function NewLeadWizardContent() {
     const [showConfirm, setShowConfirm] = useState(false);
 
     // 1) Initialize/Resume Draft
-    useEffect(() => {
-        const init = async () => {
-            try {
-                const res = await fetch('/api/leads/create', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ initializeDraft: true })
-                });
-                const result = await res.json();
-                if (result.success) {
-                    setLeadId(result.data.leadId);
-                    setReferenceId(result.data.referenceId);
-                    if (result.data.formData) {
-                        setFormData((prev: any) => ({ ...prev, ...result.data.formData }));
-                        setLastSaved('Draft resumed');
-                    }
-                } else {
-                    setApiError(result.error?.message || "Initialization failed");
+    const initDraft = async () => {
+        setInitLoading(true);
+        setApiError(null);
+        try {
+            const res = await fetch('/api/leads/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ initializeDraft: true })
+            });
+            const result = await res.json();
+            if (result.success) {
+                setLeadId(result.data.leadId);
+                setReferenceId(result.data.referenceId);
+                if (result.data.formData) {
+                    setFormData((prev: any) => ({ ...prev, ...result.data.formData }));
+                    setLastSaved('Draft resumed');
                 }
-            } catch (e) {
-                setApiError("Connection lost. Please try again.");
-            } finally {
-                setInitLoading(false);
+            } else {
+                setApiError(result.error?.message || "Initialization failed. Please retry.");
             }
-        };
-        init();
+        } catch (e) {
+            setApiError("Connection lost. Please try again.");
+        } finally {
+            setInitLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        initDraft();
     }, []);
 
     // 2) Data Loading
@@ -161,7 +166,7 @@ function NewLeadWizardContent() {
         if (!formData.primary_product_id) e.primary_product_id = "Required";
         if (formData.current_address && formData.current_address.length < 10) e.current_address = "Address too short";
 
-        const isVehicle = ['2W', '3W', '4W'].includes(formData.asset_model);
+        const isVehicle = formData.is_vehicle_category;
         if (isVehicle && formData.vehicle_rc?.trim()) {
             if (!formData.vehicle_ownership) e.vehicle_ownership = "*";
             if (!formData.vehicle_owner_name) e.vehicle_owner_name = "*";
@@ -172,6 +177,10 @@ function NewLeadWizardContent() {
     };
 
     const commitStep = async () => {
+        if (!leadId) {
+            setApiError("Lead draft not initialized. Please refresh the page and try again.");
+            return;
+        }
         if (!validate()) return;
         setShowConfirm(true);
     };
@@ -206,7 +215,8 @@ function NewLeadWizardContent() {
                     router.push(`/dealer-portal/leads`);
                 }
             } else {
-                setApiError(result.error?.message || "Server Error");
+                const details = result.error?.details?.map((d: any) => `${d.path}: ${d.message}`).join(', ');
+                setApiError(details ? `Validation error — ${details}` : (result.error?.message || "Server Error"));
             }
         } catch (err) {
             setApiError("Connection failed. Please retry.");
@@ -225,7 +235,19 @@ function NewLeadWizardContent() {
 
     if (initLoading) return <div className="min-h-screen flex items-center justify-center bg-[#F8F9FB]"><Loader2 className="w-10 h-10 animate-spin text-[#1D4ED8]" /></div>;
 
-    const isVehicleCategory = ['2W', '3W', '4W'].includes(formData.asset_model);
+    if (!leadId && apiError) return (
+        <div className="min-h-screen flex items-center justify-center bg-[#F8F9FB]">
+            <div className="text-center space-y-4">
+                <AlertCircle className="w-12 h-12 text-red-500 mx-auto" />
+                <p className="text-red-600 font-medium">{apiError}</p>
+                <button onClick={initDraft} className="px-6 py-2 bg-[#1D4ED8] text-white rounded-lg hover:bg-[#1E40AF]">
+                    Retry
+                </button>
+            </div>
+        </div>
+    );
+
+    const isVehicleCategory = formData.is_vehicle_category;
 
     return (
         <div className="min-h-screen bg-[#F8F9FB]">
@@ -361,13 +383,13 @@ function NewLeadWizardContent() {
                                             label="Product Category"
                                             value={formData.asset_model}
                                             onChange={(v: string) => {
-                                                const cat = categories.find((c: any) => c.name === v);
-                                                setFormData((p: any) => ({ ...p, asset_model: v, product_category_id: cat?.id || '', primary_product_id: '' }));
+                                                const cat = categories.find((c: any) => c.slug === v);
+                                                setFormData((p: any) => ({ ...p, asset_model: cat?.slug || v, asset_model_label: cat?.name || v, is_vehicle_category: cat?.isVehicleCategory || false, product_category_id: cat?.id || '', primary_product_id: '' }));
                                                 setIsModified(true);
                                             }}
                                             placeholder="Select from Current Inventory"
                                         >
-                                            {categories.map((c: any) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                                            {categories.map((c: any) => <option key={c.id} value={c.slug}>{c.name}</option>)}
                                         </SelectField>
 
                                         <div className="space-y-2">
@@ -381,7 +403,7 @@ function NewLeadWizardContent() {
                                                     <option value="" disabled>Select primary product</option>
                                                     {products.map((p: any) => (
                                                         <option key={p.id} value={p.id}>
-                                                            {p.model_type} {outOfStockProducts.includes(p.id) ? '(Out of Stock)' : ''}
+                                                            {p.name} {outOfStockProducts.includes(p.id) ? '(Out of Stock)' : ''}
                                                         </option>
                                                     ))}
                                                 </select>
@@ -424,7 +446,7 @@ function NewLeadWizardContent() {
                                                         className="w-full h-10 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
                                                     >
                                                         <option value="">Select product</option>
-                                                        {products.map((p: any) => <option key={p.id} value={p.id}>{p.model_type}</option>)}
+                                                        {products.map((p: any) => <option key={p.id} value={p.id}>{p.name}</option>)}
                                                     </select>
                                                 </div>
                                                 <button

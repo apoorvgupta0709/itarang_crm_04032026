@@ -2,65 +2,67 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { db } from './index';
-import { productCatalog } from './schema';
-import { nanoid } from 'nanoid';
+import { products, productCategories } from './schema';
+import { eq } from 'drizzle-orm';
 
-// Technical Specifications (Voltage-Capacity)
-// 1 Confirmed + 8 Deduced/Typical = 9 Specs
+// These match the existing seeded 3W batteries from the Supabase migration
 const batterySpecs = [
-    { volts: '51.2', amp_hours: '105' }, // Confirmed
-    { volts: '48', amp_hours: '40' },
-    { volts: '60', amp_hours: '30' },
-    { volts: '60', amp_hours: '50' },
-    { volts: '72', amp_hours: '50' },
-    { volts: '48', amp_hours: '100' },
-    { volts: '60', amp_hours: '100' },
-    { volts: '72', amp_hours: '100' },
-    { volts: '51.2', amp_hours: '80' },
+    { voltage_v: 51, capacity_ah: 105, sku: '3W-51V-105AH', sort_order: 1 },
+    { voltage_v: 61, capacity_ah: 105, sku: '3W-61V-105AH', sort_order: 2 },
+    { voltage_v: 61, capacity_ah: 132, sku: '3W-61V-132AH', sort_order: 3 },
+    { voltage_v: 61, capacity_ah: 153, sku: '3W-61V-153AH', sort_order: 4 },
+    { voltage_v: 64, capacity_ah: 105, sku: '3W-64V-105AH', sort_order: 5 },
+    { voltage_v: 64, capacity_ah: 132, sku: '3W-64V-132AH', sort_order: 6 },
+    { voltage_v: 64, capacity_ah: 153, sku: '3W-64V-153AH', sort_order: 7 },
+    { voltage_v: 72, capacity_ah: 105, sku: '3W-72V-105AH', sort_order: 8 },
+    { voltage_v: 72, capacity_ah: 132, sku: '3W-72V-132AH', sort_order: 9 },
+    { voltage_v: 72, capacity_ah: 153, sku: '3W-72V-153AH', sort_order: 10 },
+    { voltage_v: 72, capacity_ah: 232, sku: '3W-72V-232AH', sort_order: 11 },
 ];
 
-const iotStatuses = ['With IOT', 'Without IOT'];
-
 export async function seedBatteries() {
-    console.log('🌱 Seeding 18 Battery Variants...');
+    console.log('🌱 Seeding 3W Battery Products...');
 
-    const variants = [];
-    let count = 0;
+    // Ensure category exists
+    let [cat] = await db
+        .select()
+        .from(productCategories)
+        .where(eq(productCategories.slug, '3w-batteries'))
+        .limit(1);
 
-    for (const spec of batterySpecs) {
-        for (const iot of iotStatuses) {
-            count++;
-            // Format: "With IOT 51.2 V-105AH"
-            // Note: Keeping format strictly consistent with the example found in docs
-            const modelType = `${iot} ${spec.volts} V-${spec.amp_hours}AH`;
-
-            // Generate a unique ID: PCAT-YYYYMMDD-SEQ (Mocking for seed)
-            const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-            const id = `PCAT-${dateStr}-BAT-${String(count).padStart(3, '0')}`;
-
-            variants.push({
-                id: id,
-                hsn_code: '85076000', // Standard HSN for Lithium Ion Batteries
-                asset_category: '3W',
-                asset_type: 'Battery',
-                model_type: modelType,
-                is_serialized: true,
-                warranty_months: 36, // Standard 3 years
-                status: 'active',
-            });
-        }
+    if (!cat) {
+        [cat] = await db.insert(productCategories).values({
+            name: '3W Batteries',
+            slug: '3w-batteries',
+            is_active: true,
+        }).returning();
+        console.log('✅ Created category: 3W Batteries');
     }
 
+    const variants = batterySpecs.map(spec => ({
+        category_id: cat.id,
+        name: `3W Battery ${spec.voltage_v}V ${spec.capacity_ah}AH`,
+        slug: spec.sku.toLowerCase(),
+        sku: spec.sku,
+        hsn_code: '85076000',
+        asset_type: 'Battery',
+        voltage_v: spec.voltage_v,
+        capacity_ah: spec.capacity_ah,
+        is_serialized: true,
+        warranty_months: 36,
+        status: 'active',
+        is_active: true,
+        sort_order: spec.sort_order,
+    }));
+
     try {
-        await db.insert(productCatalog).values(variants).onConflictDoNothing();
+        await db.insert(products).values(variants).onConflictDoNothing();
         console.log(`✅ Successfully seeded ${variants.length} battery variants.`);
-        // console.table(variants.map(v => ({ id: v.id, model: v.model_type })));
     } catch (error) {
         console.error('❌ Error seeding batteries:', error);
     }
 }
 
-// Allow running directly if main module
 if (require.main === module) {
     seedBatteries()
         .then(() => process.exit(0))

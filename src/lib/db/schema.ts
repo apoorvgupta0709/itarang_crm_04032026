@@ -18,20 +18,36 @@ export const users = pgTable('users', {
 
 // --- PHASE 0: MVP ---
 
-export const productCatalog = pgTable('product_catalog', {
-    id: varchar('id', { length: 255 }).primaryKey(), // PCAT-YYYYMMDD-SEQ
-    hsn_code: varchar('hsn_code', { length: 8 }).notNull(),
-    asset_category: varchar('asset_category', { length: 20 }).notNull(), // 2W, 3W, Inverter
-    asset_type: varchar('asset_type', { length: 50 }).notNull(), // Charger, Battery, SOC, Harness, Inverter
-    model_type: text('model_type').notNull(),
-    is_serialized: boolean('is_serialized').default(true).notNull(),
-    warranty_months: integer('warranty_months').notNull(),
-    status: varchar('status', { length: 20 }).default('active').notNull(),
-    created_by: uuid('created_by').references(() => users.id),
+export const productCategories = pgTable('product_categories', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    name: text('name').notNull().unique(),
+    slug: text('slug').notNull().unique(),
+    is_active: boolean('is_active').notNull().default(true),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-    disabled_at: timestamp('disabled_at', { withTimezone: true }),
-    disabled_by: uuid('disabled_by').references(() => users.id),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+export const products = pgTable('products', {
+    id: uuid('id').primaryKey().defaultRandom(),
+    category_id: uuid('category_id').references(() => productCategories.id, { onDelete: 'restrict' }).notNull(),
+    name: text('name').notNull(),                        // e.g. "51V 105AH"
+    slug: text('slug').notNull(),                        // e.g. "51v-105ah"
+    voltage_v: integer('voltage_v'),                     // 51 / 61 / 64 / 72 (null for non-battery)
+    capacity_ah: integer('capacity_ah'),                 // 105 / 132 / 153 / 232 (null for non-battery)
+    sku: text('sku').notNull().unique(),                 // e.g. "3W-51V-105AH"
+    hsn_code: varchar('hsn_code', { length: 8 }),
+    asset_type: varchar('asset_type', { length: 50 }),   // Battery, Charger, SOC, Harness, Inverter
+    is_serialized: boolean('is_serialized').notNull().default(true),
+    warranty_months: integer('warranty_months').notNull().default(0),
+    status: varchar('status', { length: 20 }).notNull().default('active'),
+    sort_order: integer('sort_order').notNull().default(0),
+    is_active: boolean('is_active').notNull().default(true),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    catSortIdx: index('idx_products_category_sort').on(table.category_id, table.sort_order),
+    voltCapIdx: index('idx_products_voltage_capacity').on(table.voltage_v, table.capacity_ah),
+}));
 
 export const oems = pgTable('oems', {
     id: varchar('id', { length: 255 }).primaryKey(), // OEM-YYYYMMDD-SEQ
@@ -65,7 +81,7 @@ export const oemContacts = pgTable('oem_contacts', {
 
 export const inventory = pgTable('inventory', {
     id: varchar('id', { length: 255 }).primaryKey(), // INV-YYYYMMDD-XXX
-    product_id: varchar('product_id', { length: 255 }).references(() => productCatalog.id).notNull(),
+    product_id: uuid('product_id').references(() => products.id),
     oem_id: varchar('oem_id', { length: 255 }).references(() => oems.id).notNull(),
 
     // Denormalized Product Details (SOP 7.4)
@@ -183,7 +199,7 @@ export const leads = pgTable('leads', {
     // V2 Workflow
     status: varchar('status', { length: 50 }).default('INCOMPLETE').notNull(), // INCOMPLETE, ACTIVE, CONVERTED, ABANDONED
     workflow_step: integer('workflow_step').default(1).notNull(),
-    primary_product_id: varchar('primary_product_id', { length: 255 }).references(() => productCatalog.id),
+    primary_product_id: uuid('primary_product_id').references(() => products.id),
     lead_score: integer('lead_score'), // hot=90, warm=60, cold=30
 
     // KYC Fields
@@ -596,8 +612,16 @@ export const conversationMessages = pgTable('conversation_messages', {
 
 // --- RELATIONS ---
 
+export const productCategoriesRelations = relations(productCategories, ({ many }) => ({
+    products: many(products),
+}));
+
+export const productsRelations = relations(products, ({ one, many }) => ({
+    category: one(productCategories, { fields: [products.category_id], references: [productCategories.id] }),
+    inventories: many(inventory),
+}));
+
 export const usersRelations = relations(users, ({ many }) => ({
-    productsCreated: many(productCatalog, { relationName: 'product_creator' }),
     oemsCreated: many(oems, { relationName: 'oem_creator' }),
     inventoryCreated: many(inventory, { relationName: 'inventory_creator' }),
     leadsUploaded: many(leads, { relationName: 'lead_uploader' }),
@@ -613,10 +637,6 @@ export const usersRelations = relations(users, ({ many }) => ({
     loanApplications: many(loanApplications),
 }));
 
-export const productCatalogRelations = relations(productCatalog, ({ one, many }) => ({
-    creator: one(users, { fields: [productCatalog.created_by], references: [users.id], relationName: 'product_creator' }),
-    inventories: many(inventory),
-}));
 
 export const oemsRelations = relations(oems, ({ one, many }) => ({
     creator: one(users, { fields: [oems.created_by], references: [users.id], relationName: 'oem_creator' }),
@@ -628,7 +648,7 @@ export const oemContactsRelations = relations(oemContacts, ({ one }) => ({
 }));
 
 export const inventoryRelations = relations(inventory, ({ one }) => ({
-    product: one(productCatalog, { fields: [inventory.product_id], references: [productCatalog.id] }),
+    product: one(products, { fields: [inventory.product_id], references: [products.id] }),
     creator: one(users, { fields: [inventory.created_by], references: [users.id], relationName: 'inventory_creator' }),
 }));
 

@@ -1,7 +1,7 @@
 
 import { requireAuth } from '@/lib/auth-utils';
 import { db } from '@/lib/db';
-import { oemInventoryForPDI, productCatalog, oems, provisions } from '@/lib/db/schema';
+import { oemInventoryForPDI, inventory, products, oems } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import PDIForm from './pdi-form';
@@ -19,15 +19,16 @@ export default async function PDIInspectionPage({ params }: PageProps) {
         provision_id: oemInventoryForPDI.provision_id,
         serial_number: oemInventoryForPDI.serial_number,
         product: {
-            model_type: productCatalog.model_type,
-            asset_type: productCatalog.asset_type,
+            model_type: products.name,
+            asset_type: products.asset_type,
         },
         oem: {
             name: oems.business_entity_name,
         }
     })
         .from(oemInventoryForPDI)
-        .leftJoin(productCatalog, eq(oemInventoryForPDI.product_id, productCatalog.id))
+        .leftJoin(inventory, eq(oemInventoryForPDI.inventory_id, inventory.id))
+        .leftJoin(products, eq(inventory.product_id, products.id))
         .leftJoin(oems, eq(oemInventoryForPDI.oem_id, oems.id))
         .where(eq(oemInventoryForPDI.id, id))
         .limit(1);

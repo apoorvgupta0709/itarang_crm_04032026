@@ -23,7 +23,8 @@ async function seed() {
     const {
         users,
         oems,
-        productCatalog,
+        products,
+        productCategories,
         leads,
         leadAssignments,
         provisions,
@@ -119,41 +120,68 @@ async function seed() {
     const exideId = oemIdMap.get('19AAACE1234E1Z1')!;
     const oemIds = [livguardId, exideId]; // Update oemIds array to use resolved IDs
 
-    // 3. Seed Product Catalog
+    // 3. Seed Product Categories + Products
     console.log('🔋 Seeding Products...');
-    const productIds = ['PCAT-SEED-BAT-001', 'PCAT-SEED-BAT-002', 'PCAT-SEED-CHG-001'];
-    await db.insert(productCatalog).values([
+    let [cat3w] = await db
+        .select()
+        .from(productCategories)
+        .where(eq(productCategories.slug, '3w-batteries'))
+        .limit(1);
+    if (!cat3w) {
+        [cat3w] = await db.insert(productCategories).values({
+            name: '3W Batteries',
+            slug: '3w-batteries',
+            is_active: true,
+        }).returning();
+    }
+
+    const seedProducts = await db.insert(products).values([
         {
-            id: productIds[0],
+            category_id: cat3w.id,
+            name: '3W Battery 51V 105AH',
+            slug: '3w-battery-51v-105ah',
+            sku: '3W-51V-105AH',
             hsn_code: '85076000',
-            asset_category: '3W',
             asset_type: 'Battery',
-            model_type: 'With IOT 51.2 V-105AH',
+            voltage_v: 51,
+            capacity_ah: 105,
             is_serialized: true,
             warranty_months: 36,
-            created_by: ceoId
+            status: 'active',
+            is_active: true,
+            sort_order: 1,
         },
         {
-            id: productIds[1],
+            category_id: cat3w.id,
+            name: '3W Battery 61V 105AH',
+            slug: '3w-battery-61v-105ah',
+            sku: '3W-61V-105AH',
             hsn_code: '85076000',
-            asset_category: '3W',
             asset_type: 'Battery',
-            model_type: 'Where IOT 60 V-100AH', // Typo fix?
+            voltage_v: 61,
+            capacity_ah: 105,
             is_serialized: true,
             warranty_months: 36,
-            created_by: ceoId
+            status: 'active',
+            is_active: true,
+            sort_order: 2,
         },
         {
-            id: productIds[2],
+            category_id: cat3w.id,
+            name: '3W Charger 72V 15A',
+            slug: '3w-charger-72v-15a',
+            sku: '3W-CHG-72V-15A',
             hsn_code: '85044030',
-            asset_category: '3W',
             asset_type: 'Charger',
-            model_type: '72V 15A Charger',
             is_serialized: true,
             warranty_months: 12,
-            created_by: ceoId
-        }
-    ]).onConflictDoNothing();
+            status: 'active',
+            is_active: true,
+            sort_order: 12,
+        },
+    ]).onConflictDoNothing().returning();
+
+    const productIds = seedProducts.map(p => p.id);
 
     // 4. Seed Accounts (Dealers)
     console.log('🤝 Seeding Accounts...');

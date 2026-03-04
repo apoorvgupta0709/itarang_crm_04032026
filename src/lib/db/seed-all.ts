@@ -7,7 +7,8 @@ import { db } from './index';
 import {
     users,
     oems,
-    productCatalog,
+    products,
+    productCategories,
     leads,
     leadAssignments,
     provisions,
@@ -64,33 +65,54 @@ async function seed() {
     ];
     await db.insert(oems).values(oemData).onConflictDoNothing();
 
-    // 3. Seed Product Catalog (Batteries)
-    console.log('🔋 Seeding Product Catalog...');
-    const products = [
-        {
-            id: 'PCAT-20260123-BAT-001',
-            hsn_code: '85076000',
-            asset_category: '3W',
-            asset_type: 'Battery',
-            model_type: 'With IOT 51.2 V-105AH',
-            is_serialized: true,
-            warranty_months: 36,
-            status: 'active',
-            created_by: ceoId,
-        },
-        {
-            id: 'PCAT-20260123-BAT-002',
-            hsn_code: '85076000',
-            asset_category: '3W',
-            asset_type: 'Battery',
-            model_type: 'Without IOT 48 V-40AH',
-            is_serialized: true,
-            warranty_months: 36,
-            status: 'active',
-            created_by: ceoId,
-        }
-    ];
-    await db.insert(productCatalog).values(products).onConflictDoNothing();
+    // 3. Seed Product Categories and Products
+    console.log('🔋 Seeding Product Categories and Products...');
+    const [cat3w] = await db
+        .insert(productCategories)
+        .values({ name: '3W Batteries', slug: '3w-batteries', is_active: true })
+        .onConflictDoNothing()
+        .returning();
+
+    // Only insert sample products if category was created (or fetch existing)
+    const categoryId = cat3w?.id ?? (
+        await db.select({ id: productCategories.id }).from(productCategories)
+            .where(({ slug }) => slug === '3w-batteries').limit(1)
+    )[0]?.id;
+
+    if (categoryId) {
+        await db.insert(products).values([
+            {
+                category_id: categoryId,
+                name: '3W Battery 51V 105AH',
+                slug: '3w-battery-51v-105ah',
+                sku: '3W-51V-105AH',
+                hsn_code: '85076000',
+                asset_type: 'Battery',
+                voltage_v: 51,
+                capacity_ah: 105,
+                is_serialized: true,
+                warranty_months: 36,
+                status: 'active',
+                is_active: true,
+                sort_order: 1,
+            },
+            {
+                category_id: categoryId,
+                name: '3W Battery 48V 40AH',
+                slug: '3w-battery-48v-40ah',
+                sku: '3W-48V-40AH',
+                hsn_code: '85076000',
+                asset_type: 'Battery',
+                voltage_v: 48,
+                capacity_ah: 40,
+                is_serialized: true,
+                warranty_months: 36,
+                status: 'active',
+                is_active: true,
+                sort_order: 2,
+            },
+        ]).onConflictDoNothing();
+    }
 
     // 4. Seed Accounts (Dealers)
     console.log('🤝 Seeding Accounts...');

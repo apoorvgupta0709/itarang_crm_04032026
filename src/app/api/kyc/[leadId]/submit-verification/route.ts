@@ -59,7 +59,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             return NextResponse.json({ success: false, error: { message: 'Lead not found' } }, { status: 404 });
         }
 
-        const isVehicle = ['2W', '3W', '4W'].includes(lead[0].asset_model || '');
+        const vehicleSlugs = ['2w', '3w', '4w', 'commercial'];
+        const assetModel = (lead[0].asset_model || '').toLowerCase();
+        const isVehicle = vehicleSlugs.some(s => assetModel.startsWith(s));
         const now = new Date();
 
         // ── 1. PAN Verification (auto if pan_number provided) ──────────────

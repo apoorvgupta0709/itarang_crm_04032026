@@ -1,5 +1,5 @@
 import { db } from '@/lib/db';
-import { productCatalog } from '@/lib/db/schema';
+import { products } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import { requireRole } from '@/lib/auth-utils';
 import { successResponse, withErrorHandler } from '@/lib/api-utils';
@@ -10,9 +10,9 @@ export const POST = withErrorHandler(async (
 ) => {
     await requireRole(['inventory_manager', 'ceo']);
 
-    const [product] = await db.update(productCatalog)
-        .set({ status: 'disabled', updated_at: new Date() })
-        .where(eq(productCatalog.id, params.id))
+    const [product] = await db.update(products)
+        .set({ status: 'disabled', is_active: false, updated_at: new Date() })
+        .where(eq(products.id, params.id))
         .returning();
 
     if (!product) {

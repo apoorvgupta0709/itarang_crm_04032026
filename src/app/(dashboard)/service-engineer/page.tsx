@@ -1,21 +1,21 @@
 
 import { db } from '@/lib/db';
-import { oemInventoryForPDI, productCatalog, oems, provisions } from '@/lib/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { oemInventoryForPDI, inventory, products, oems, provisions } from '@/lib/db/schema';
+import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { format } from 'timeago.js';
 
 export const dynamic = 'force-dynamic';
 
 async function getPendingPDI() {
-    const inventory = await db.select({
+    const rows = await db.select({
         id: oemInventoryForPDI.id,
         serial_number: oemInventoryForPDI.serial_number,
         pdi_status: oemInventoryForPDI.pdi_status,
         product: {
-            id: productCatalog.id,
-            model_type: productCatalog.model_type,
-            asset_type: productCatalog.asset_type,
+            id: products.id,
+            model_type: products.name,
+            asset_type: products.asset_type,
         },
         oem: {
             id: oems.id,
@@ -27,12 +27,13 @@ async function getPendingPDI() {
         }
     })
         .from(oemInventoryForPDI)
-        .leftJoin(productCatalog, eq(oemInventoryForPDI.product_id, productCatalog.id))
+        .leftJoin(inventory, eq(oemInventoryForPDI.inventory_id, inventory.id))
+        .leftJoin(products, eq(inventory.product_id, products.id))
         .leftJoin(oems, eq(oemInventoryForPDI.oem_id, oems.id))
         .leftJoin(provisions, eq(oemInventoryForPDI.provision_id, provisions.id))
         .where(eq(oemInventoryForPDI.pdi_status, 'pending'));
 
-    return inventory;
+    return rows;
 }
 
 export default async function ServiceEngineerDashboard() {

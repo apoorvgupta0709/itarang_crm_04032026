@@ -10,8 +10,8 @@ import { Plus, Trash2, Calculator, Loader2 } from 'lucide-react';
 
 interface Product {
     id: string;
-    model_name: string;
-    base_price: number;
+    name: string;
+    sku?: string;
 }
 
 function NewDealForm() {
@@ -82,7 +82,7 @@ function NewDealForm() {
                     lead_id: leadId,
                     products: selectedProducts.map(p => ({
                         product_id: p.product_id,
-                        product_name: catalog.find(c => c.id === p.product_id)?.model_name || 'Product',
+                        product_name: catalog.find(c => c.id === p.product_id)?.name || 'Product',
                         quantity: Number(p.quantity),
                         unit_price: Number(p.unit_price),
                         subtotal: p.unit_price * p.quantity
@@ -137,7 +137,7 @@ function NewDealForm() {
                                 >
                                     <option value="">Select Product</option>
                                     {catalog.map(item => (
-                                        <option key={item.id} value={item.id}>{item.model_name}</option>
+                                        <option key={item.id} value={item.id}>{item.name}</option>
                                     ))}
                                 </Select>
                             </div>

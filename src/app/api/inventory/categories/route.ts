@@ -1,28 +1,25 @@
 import { db } from '@/lib/db';
-import { productCatalog } from '@/lib/db/schema';
-import { sql } from 'drizzle-orm';
+import { productCategories } from '@/lib/db/schema';
+import { eq, asc } from 'drizzle-orm';
 import { successResponse, withErrorHandler } from '@/lib/api-utils';
 import { requireRole } from '@/lib/auth-utils';
 
 export const GET = withErrorHandler(async () => {
     await requireRole(['dealer', 'ceo', 'sales_manager']);
 
-    // Select unique asset categories
-    const categories = await db.execute(sql`
-        SELECT DISTINCT asset_category as name 
-        FROM product_catalog 
-        WHERE asset_category IS NOT NULL
-        ORDER BY asset_category ASC
-    `);
+    const vehicleCategorySlugs = ['2w', '3w', '4w', 'commercial'];
 
-    // Add metadata like isVehicleCategory
-    const vehicleCategories = ['2W', '3W', '4W', 'Commercial'];
+    const rows = await db
+        .select()
+        .from(productCategories)
+        .where(eq(productCategories.is_active, true))
+        .orderBy(asc(productCategories.name));
 
-    const rows = Array.isArray(categories) ? categories : (categories as any).rows || [];
-    const result = rows.map((c: any, index: number) => ({
-        id: index + 1,
+    const result = rows.map(c => ({
+        id: c.id,
         name: c.name,
-        isVehicleCategory: vehicleCategories.includes(c.name)
+        slug: c.slug,
+        isVehicleCategory: vehicleCategorySlugs.some(s => c.slug.startsWith(s)),
     }));
 
     return successResponse(result);

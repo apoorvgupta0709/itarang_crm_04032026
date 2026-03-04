@@ -179,12 +179,13 @@ export const GET = withErrorHandler(async (req: Request, { params }: { params: P
 
         // 3. Category Stats
         const categoryStats = await db.execute(sql`
-            SELECT 
-                COALESCE(pc.asset_category, 'Unknown') as name,
+            SELECT
+                COALESCE(pc.name, 'Unknown') as name,
                 COUNT(l.id) as count
             FROM leads l
             CROSS JOIN LATERAL jsonb_array_elements_text(l.interested_in) as interested_id
-            LEFT JOIN product_catalog pc ON pc.id = interested_id
+            LEFT JOIN products p ON p.id::text = interested_id
+            LEFT JOIN product_categories pc ON pc.id = p.category_id
             GROUP BY 1
             ORDER BY 2 DESC
         `);
