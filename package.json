@@ -15,6 +15,7 @@
   "dependencies": {
     "@google-cloud/vision": "^5.3.4",
     "@hookform/resolvers": "^5.2.2",
+    "@langchain/langgraph": "^1.2.0",
     "@langchain/openai": "^1.2.8",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.90.1",

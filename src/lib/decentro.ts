@@ -15,13 +15,17 @@ function genRefId(): string {
     return `ITR-${ts}-${rand}`;
 }
 
+function isRealSecret(val?: string): boolean {
+    return !!val && !val.startsWith('your_') && val.length > 5;
+}
+
 function kycHeaders(): Record<string, string> {
     const h: Record<string, string> = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
         'Content-Type': 'application/json',
     };
-    if (MODULE_SECRET_KYC) h['module_secret'] = MODULE_SECRET_KYC;
+    if (isRealSecret(MODULE_SECRET_KYC)) h['module_secret'] = MODULE_SECRET_KYC!;
     return h;
 }
 
@@ -31,7 +35,7 @@ function bankingHeaders(): Record<string, string> {
         'client_secret': CLIENT_SECRET,
         'Content-Type': 'application/json',
     };
-    if (MODULE_SECRET_BANKING) h['module_secret'] = MODULE_SECRET_BANKING;
+    if (isRealSecret(MODULE_SECRET_BANKING)) h['module_secret'] = MODULE_SECRET_BANKING!;
     return h;
 }
 
@@ -146,7 +150,7 @@ export async function faceMatch(image1: Blob, image2: Blob) {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
     };
-    if (MODULE_SECRET_KYC) headers['module_secret'] = MODULE_SECRET_KYC;
+    if (isRealSecret(MODULE_SECRET_KYC)) headers['module_secret'] = MODULE_SECRET_KYC!;
 
     const res = await fetch(`${BASE_URL}/v2/kyc/forensics/face_match`, {
         method: 'POST',
@@ -172,7 +176,7 @@ export async function extractDocumentOcr(document_type: OcrDocType, documentBlob
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
     };
-    if (MODULE_SECRET_KYC) headers['module_secret'] = MODULE_SECRET_KYC;
+    if (isRealSecret(MODULE_SECRET_KYC)) headers['module_secret'] = MODULE_SECRET_KYC!;
 
     const res = await fetch(`${BASE_URL}/kyc/scan_extract/ocr`, {
         method: 'POST',

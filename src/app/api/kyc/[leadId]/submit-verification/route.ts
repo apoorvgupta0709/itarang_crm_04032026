@@ -71,7 +71,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
                     document_type: 'PAN',
                     id_number: pan_number.toUpperCase().trim(),
                 });
-                const panOk = panRes.responseStatus === 'SUCCESS';
+                const panOk = (panRes.responseStatus || panRes.status || '').toUpperCase() === 'SUCCESS'
+                    || panRes.message?.toLowerCase().includes('retrieved successfully');
                 await upsertVerification(leadId, 'pan', {
                     status: panOk ? 'success' : 'failed',
                     api_provider: 'decentro',
@@ -104,7 +105,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
                     name: account_holder_name,
                     perform_name_match: !!account_holder_name,
                 });
-                const bankOk = bankRes.responseStatus === 'SUCCESS';
+                const bankOk = (bankRes.responseStatus || bankRes.status || '').toUpperCase() === 'SUCCESS'
+                    || bankRes.message?.toLowerCase().includes('successfully');
                 await upsertVerification(leadId, 'bank', {
                     status: bankOk ? 'success' : 'failed',
                     api_provider: 'decentro',

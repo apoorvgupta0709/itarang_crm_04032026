@@ -9,6 +9,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ lead
         const docs = await db.select().from(kycDocuments).where(eq(kycDocuments.lead_id, leadId));
         return NextResponse.json({ success: true, data: docs });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Failed to fetch documents' } }, { status: 500 });
+        console.error('[KYC Documents] Error:', error);
+        const message = error instanceof Error ? error.message : 'Failed to fetch documents';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

@@ -98,6 +98,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             message: 'KYC completed successfully',
         });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[KYC Complete] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

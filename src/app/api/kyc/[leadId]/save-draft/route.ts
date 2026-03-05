@@ -19,6 +19,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ le
 
         return NextResponse.json({ success: true, savedAt: new Date().toISOString() });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[KYC Save Draft] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

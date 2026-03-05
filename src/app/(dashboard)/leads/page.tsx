@@ -4,11 +4,12 @@ import { Button } from '@/components/ui/button';
 import { requireAuth } from '@/lib/auth-utils';
 import { Plus } from 'lucide-react';
 import { CallButton } from '@/components/leads/call-button';
+import { AIDialerControls, AIStatusBadges } from '@/components/leads/ai-dialer-controls';
 
 export const dynamic = 'force-dynamic';
 
 export default async function LeadsPage() {
-    await requireAuth();
+    const user = await requireAuth();
 
     const supabase = await createClient();
     const { data, error } = await supabase
@@ -17,6 +18,8 @@ export default async function LeadsPage() {
         .order('created_at', { ascending: false });
 
     const allLeads = data || [];
+    const userRole = user.role || 'user';
+    const isCeo = userRole === 'ceo';
 
     if (error) {
         console.error('Error fetching leads:', error);
@@ -37,6 +40,9 @@ export default async function LeadsPage() {
                 </Link>
             </div>
 
+            {/* CEO-only: AI Dialer multi-select + assign controls */}
+            {isCeo && <AIDialerControls leads={allLeads.map(l => ({ id: l.id, ai_managed: l.ai_managed, manual_takeover: l.manual_takeover, intent_score: l.intent_score }))} userRole={userRole} />}
+
             <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
                 <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-gray-200">
@@ -47,6 +53,7 @@ export default async function LeadsPage() {
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Interest</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                {isCeo && <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AI Status</th>}
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Call</th>
                                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Action</th>
                             </tr>
@@ -66,7 +73,7 @@ export default async function LeadsPage() {
                                         {lead.city}, {lead.state}
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                        <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full
                                             ${lead.interest_level === 'hot' ? 'bg-red-100 text-red-800' :
                                                 lead.interest_level === 'warm' ? 'bg-orange-100 text-orange-800' :
                                                     'bg-blue-100 text-blue-800'}`}>
@@ -74,12 +81,17 @@ export default async function LeadsPage() {
                                         </span>
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap">
-                                        <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full 
+                                        <span className={`px-2 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full
                                             ${lead.lead_status === 'qualified' ? 'bg-green-100 text-green-800' :
                                                 'bg-gray-100 text-gray-800'}`}>
                                             {lead.lead_status?.toUpperCase()}
                                         </span>
                                     </td>
+                                    {isCeo && (
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <AIStatusBadges lead={{ id: lead.id, ai_managed: lead.ai_managed, manual_takeover: lead.manual_takeover, intent_score: lead.intent_score }} />
+                                        </td>
+                                    )}
                                     <td className="px-6 py-4 whitespace-nowrap">
                                         <CallButton leadId={lead.id} />
                                     </td>

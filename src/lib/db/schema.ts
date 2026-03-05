@@ -196,6 +196,18 @@ export const leads = pgTable('leads', {
     next_call_after: timestamp('next_call_after', { withTimezone: true }),
     do_not_call: boolean('do_not_call').default(false),
 
+    // AI Dialer (Bolna)
+    ai_managed: boolean('ai_managed').default(false),
+    ai_owner: text('ai_owner'),
+    manual_takeover: boolean('manual_takeover').default(false),
+    last_ai_action_at: timestamp('last_ai_action_at', { withTimezone: true }),
+    intent_score: integer('intent_score'),
+    intent_reason: text('intent_reason'),
+    next_call_at: timestamp('next_call_at', { withTimezone: true }),
+    call_priority: integer('call_priority').default(0),
+    conversation_summary: text('conversation_summary'),
+    last_call_status: text('last_call_status'),
+
     // V2 Workflow
     status: varchar('status', { length: 50 }).default('INCOMPLETE').notNull(), // INCOMPLETE, ACTIVE, CONVERTED, ABANDONED
     workflow_step: integer('workflow_step').default(1).notNull(),
@@ -1215,3 +1227,34 @@ export const campaignSegmentsRelations = relations(campaignSegments, ({ one }) =
     dealer: one(accounts, { fields: [campaignSegments.dealer_id], references: [accounts.id] }),
     creator: one(users, { fields: [campaignSegments.created_by], references: [users.id] }),
 }));
+
+// --- INTELLICAR TELEMETRY (ORM definitions for existing tables) ---
+
+export const deviceBatteryMap = pgTable('device_battery_map', {
+    id: varchar('id', { length: 255 }).primaryKey(),
+    device_id: varchar('device_id', { length: 100 }).notNull(),
+    battery_serial: varchar('battery_serial', { length: 100 }),
+    vehicle_number: varchar('vehicle_number', { length: 50 }),
+    vehicle_type: varchar('vehicle_type', { length: 50 }),
+    customer_name: text('customer_name'),
+    customer_phone: varchar('customer_phone', { length: 20 }),
+    dealer_id: varchar('dealer_id', { length: 255 }),
+    status: varchar('status', { length: 20 }).default('active'),
+    installed_at: timestamp('installed_at', { withTimezone: true }),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+export const batteryAlerts = pgTable('battery_alerts', {
+    id: varchar('id', { length: 255 }).primaryKey(),
+    device_id: varchar('device_id', { length: 100 }).notNull(),
+    alert_type: varchar('alert_type', { length: 50 }).notNull(),
+    severity: varchar('severity', { length: 20 }).notNull(),
+    message: text('message'),
+    value: decimal('value', { precision: 10, scale: 2 }),
+    threshold: decimal('threshold', { precision: 10, scale: 2 }),
+    acknowledged: boolean('acknowledged').default(false),
+    acknowledged_at: timestamp('acknowledged_at', { withTimezone: true }),
+    acknowledged_by: text('acknowledged_by'),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});

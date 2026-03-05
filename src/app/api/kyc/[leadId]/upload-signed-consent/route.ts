@@ -61,6 +61,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
 
         return NextResponse.json({ success: true, fileUrl: urlData.publicUrl });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[Upload Signed Consent] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

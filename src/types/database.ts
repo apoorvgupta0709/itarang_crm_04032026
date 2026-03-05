@@ -40,3 +40,11 @@ export type NewPDIRecord = InferInsertModel<typeof schema.pdiRecords>;
 export type Provision = InferSelectModel<typeof schema.provisions>;
 export type Order = InferSelectModel<typeof schema.orders>;
 export type Account = InferSelectModel<typeof schema.accounts>;
+
+// AI Dialer
+export type AiCallLog = InferSelectModel<typeof schema.aiCallLogs>;
+export type NewAiCallLog = InferInsertModel<typeof schema.aiCallLogs>;
+
+// Telemetry
+export type DeviceBatteryMap = InferSelectModel<typeof schema.deviceBatteryMap>;
+export type BatteryAlert = InferSelectModel<typeof schema.batteryAlerts>;

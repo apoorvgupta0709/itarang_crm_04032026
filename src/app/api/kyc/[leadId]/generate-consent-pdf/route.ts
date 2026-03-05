@@ -45,6 +45,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             expiresIn: 3600,
         });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[Generate Consent PDF] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

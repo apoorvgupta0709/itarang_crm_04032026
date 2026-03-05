@@ -19,6 +19,12 @@ const roleNavigation: Record<string, any[]> = {
             ]
         },
         {
+            section: 'INTELLIGENCE', items: [
+                { id: 'intellicar', label: 'Intellicar Dashboard', icon: Battery, href: '/ceo/intellicar' },
+                { id: 'ai-dialer', label: 'AI Dialer (Bolna)', icon: Phone, href: '/ceo/ai-dialer' },
+            ]
+        },
+        {
             section: 'ADMIN', items: [
                 { id: 'kyc-review', label: 'KYC Review', icon: Shield, href: '/admin/kyc-review' },
             ]

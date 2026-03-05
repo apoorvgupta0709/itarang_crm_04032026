@@ -29,6 +29,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ lead
 
         return NextResponse.json({ success: true, data });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[KYC Verifications] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

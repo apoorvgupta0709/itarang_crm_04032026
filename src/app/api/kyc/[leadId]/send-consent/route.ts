@@ -55,6 +55,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
             channel,
         });
     } catch (error) {
-        return NextResponse.json({ success: false, error: { message: 'Server error' } }, { status: 500 });
+        console.error('[Send Consent] Error:', error);
+        const message = error instanceof Error ? error.message : 'Server error';
+        return NextResponse.json({ success: false, error: { message } }, { status: 500 });
     }
 }

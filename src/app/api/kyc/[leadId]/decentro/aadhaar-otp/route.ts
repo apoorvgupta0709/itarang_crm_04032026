@@ -19,7 +19,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ lea
         }
 
         const decentroRes = await aadhaarGenerateOtp(aadhaar_number);
-        const success = decentroRes.responseStatus === 'SUCCESS';
+        console.log('[Decentro Aadhaar OTP] Response:', JSON.stringify(decentroRes));
+        const success = (decentroRes.responseStatus || decentroRes.status || '').toUpperCase() === 'SUCCESS';
         const now = new Date();
         const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
         const seq = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
