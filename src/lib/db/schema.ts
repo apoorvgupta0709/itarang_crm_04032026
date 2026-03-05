@@ -1258,3 +1258,11 @@ export const batteryAlerts = pgTable('battery_alerts', {
     acknowledged_by: text('acknowledged_by'),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
+
+// --- APP SETTINGS ---
+
+export const appSettings = pgTable('app_settings', {
+    key: text('key').primaryKey(),
+    value: jsonb('value').notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});

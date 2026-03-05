@@ -2,17 +2,29 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { sql } from 'drizzle-orm';
 
-const connectionString = process.env.DATABASE_URL;
+let _telemetryDb: ReturnType<typeof drizzle> | null = null;
 
-if (!connectionString) {
-    throw new Error('DATABASE_URL is not set');
+function getDb() {
+    if (!_telemetryDb) {
+        const connectionString = process.env.DATABASE_URL;
+        if (!connectionString) {
+            throw new Error('DATABASE_URL is not set');
+        }
+        const queryClient = postgres(connectionString, {
+            ssl: 'require',
+            prepare: false,
+        });
+        _telemetryDb = drizzle(queryClient);
+    }
+    return _telemetryDb;
 }
 
-const queryClient = postgres(connectionString, {
-    ssl: 'require',
-    prepare: false,
+export const telemetryDb = new Proxy({} as ReturnType<typeof drizzle>, {
+    get(_, prop) {
+        const db = getDb();
+        const val = (db as unknown as Record<string | symbol, unknown>)[prop];
+        return typeof val === 'function' ? val.bind(db) : val;
+    },
 });
-
-export const telemetryDb = drizzle(queryClient);
 
 export { sql };

@@ -9,6 +9,7 @@ import {
     Sparkles, HelpCircle, Save, ArrowRight
 } from 'lucide-react';
 import { useAuth } from '@/components/auth/AuthProvider';
+import { DatePicker } from '@/components/ui/date-picker';
 
 const workflowSteps = [
     { id: 1, title: 'Customer Info', icon: User },
@@ -48,6 +49,7 @@ function NewLeadWizardContent() {
         vehicle_owner_name: '',
         vehicle_owner_phone: '',
         interest_level: 'hot',
+        payment_method: 'finance', // 'upfront' or 'finance'
         asset_model: '', // stores category slug for API calls
         asset_model_label: '', // stores category display name
         is_vehicle_category: false, // true for 2W/3W/4W categories
@@ -67,23 +69,35 @@ function NewLeadWizardContent() {
     const [showHelp, setShowHelp] = useState(false);
     const [showConfirm, setShowConfirm] = useState(false);
 
+    const [showDraftPrompt, setShowDraftPrompt] = useState(false);
+    const [hasDraft, setHasDraft] = useState(false);
+
     // 1) Initialize/Resume Draft
-    const initDraft = async () => {
+    const initDraft = async (fresh = false) => {
         setInitLoading(true);
         setApiError(null);
         try {
             const res = await fetch('/api/leads/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ initializeDraft: true })
+                body: JSON.stringify({ initializeDraft: true, fresh })
             });
             const result = await res.json();
             if (result.success) {
                 setLeadId(result.data.leadId);
                 setReferenceId(result.data.referenceId);
-                if (result.data.formData) {
-                    setFormData((prev: any) => ({ ...prev, ...result.data.formData }));
-                    setLastSaved('Draft resumed');
+                if (result.data.formData && !fresh) {
+                    // Check if the draft has any real data
+                    const fd = result.data.formData;
+                    const hasData = fd.full_name || fd.phone || fd.dob || fd.father_or_husband_name;
+                    if (hasData && result.data.resumed) {
+                        setHasDraft(true);
+                        setShowDraftPrompt(true);
+                        setFormData((prev: any) => ({ ...prev, ...fd }));
+                        setLastSaved('Draft resumed');
+                    } else {
+                        setFormData((prev: any) => ({ ...prev, ...fd }));
+                    }
                 }
             } else {
                 setApiError(result.error?.message || "Initialization failed. Please retry.");
@@ -95,8 +109,26 @@ function NewLeadWizardContent() {
         }
     };
 
+    const handleStartFresh = async () => {
+        setShowDraftPrompt(false);
+        setFormData({
+            full_name: '', phone: '', father_or_husband_name: '', dob: '',
+            current_address: '', permanent_address: '', is_current_same: false,
+            product_category_id: '', product_type_id: '', primary_product_id: '',
+            interested_in: [], vehicle_rc: '', vehicle_ownership: '',
+            vehicle_owner_name: '', vehicle_owner_phone: '', interest_level: 'hot',
+            payment_method: 'finance', asset_model: '', asset_model_label: '', is_vehicle_category: false,
+        });
+        setLeadId(null);
+        setReferenceId(null);
+        setIsModified(false);
+        await initDraft(true);
+    };
+
     useEffect(() => {
-        initDraft();
+        const params = new URLSearchParams(window.location.search);
+        const fresh = params.get('fresh') === 'true';
+        initDraft(fresh);
     }, []);
 
     // 2) Data Loading
@@ -207,8 +239,11 @@ function NewLeadWizardContent() {
             const result = await res.json();
             if (result.success) {
                 const { leadId: updatedLeadId } = result.data;
-                // Hot leads: auto-navigate to Step 2 (KYC)
-                if (formData.interest_level === 'hot') {
+                // Upfront/Cash payment: skip KYC entirely
+                if (formData.payment_method === 'upfront') {
+                    router.push(`/dealer-portal/leads`);
+                } else if (formData.interest_level === 'hot') {
+                    // Hot leads with finance: auto-navigate to Step 2 (KYC)
                     router.push(`/dealer-portal/leads/${updatedLeadId}/kyc`);
                 } else {
                     // Warm/Cold: save and exit workflow
@@ -251,6 +286,32 @@ function NewLeadWizardContent() {
 
     return (
         <div className="min-h-screen bg-[#F8F9FB]">
+            {/* Draft resume prompt */}
+            {showDraftPrompt && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full mx-4 p-6 space-y-4">
+                        <h3 className="text-lg font-bold text-gray-900">Resume Previous Draft?</h3>
+                        <p className="text-sm text-gray-600">
+                            You have an unsaved lead draft from a previous session. Would you like to continue where you left off?
+                        </p>
+                        <div className="flex gap-3">
+                            <button
+                                onClick={handleStartFresh}
+                                className="flex-1 px-4 py-2.5 border border-gray-300 rounded-xl font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+                            >
+                                Start Fresh
+                            </button>
+                            <button
+                                onClick={() => setShowDraftPrompt(false)}
+                                className="flex-1 px-4 py-2.5 bg-[#1D4ED8] text-white rounded-xl font-medium hover:bg-[#1E40AF] transition-colors"
+                            >
+                                Resume Draft
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Main container with increased bottom padding to avoid sticky footer overlap */}
             <div className="max-w-[1200px] mx-auto px-6 py-8 pb-40">
                 {/* HEADER AREA */}
@@ -320,18 +381,13 @@ function NewLeadWizardContent() {
 
                                     <div className="space-y-2">
                                         <label className="text-sm font-bold text-gray-900 px-1">Date of Birth</label>
-                                        <div className="relative">
-                                            <input
-                                                type="date"
-                                                value={formData.dob ?? ''}
-                                                onChange={e => updateField('dob', e.target.value)}
-                                                className={`w-full h-11 pl-12 pr-4 bg-white border-2 rounded-xl outline-none transition-all placeholder-gray-400 focus:border-[#1D4ED8] focus:ring-4 focus:ring-blue-50/50 text-sm ${errors.dob ? 'border-red-500' : 'border-[#EBEBEB]'}`}
-                                            />
-                                            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400">
-                                                <Calendar className="w-5 h-5" />
-                                            </div>
-                                            {!formData.dob && <span className="absolute left-12 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">Pick a date</span>}
-                                        </div>
+                                        <DatePicker
+                                            value={formData.dob ?? ''}
+                                            onChange={(v: string) => updateField('dob', v)}
+                                            minAge={18}
+                                            error={!!errors.dob}
+                                        />
+                                        {errors.dob && <p className="text-xs text-red-500 px-1">{errors.dob}</p>}
                                     </div>
 
                                     <InputField label="Phone Number" value={formData.phone} onChange={(v: string) => updateField('phone', v)} onBlur={handlePhoneBlur} error={errors.phone} placeholder="9876543210" />
@@ -542,8 +598,32 @@ function NewLeadWizardContent() {
                                             );
                                         })}
                                     </div>
+                                    {/* Payment Method */}
+                                    <div className="space-y-2">
+                                        <label className="text-sm font-bold text-gray-900 px-1">Payment Method</label>
+                                        <div className="flex bg-[#F1F3F5] rounded-[14px] p-1.5">
+                                            {([
+                                                { value: 'finance', label: 'Finance / Loan', icon: '🏦' },
+                                                { value: 'upfront', label: 'Cash / Upfront', icon: '💵' },
+                                            ] as const).map((opt) => (
+                                                <button
+                                                    key={opt.value}
+                                                    onClick={() => updateField('payment_method', opt.value)}
+                                                    className={`flex-1 py-3 text-sm font-bold rounded-[10px] transition-all tracking-tight ${formData.payment_method === opt.value ? 'bg-[#0047AB] text-white shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                                                >
+                                                    {opt.icon} {opt.label}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
                                     <div className="px-4 py-3 bg-gray-50 rounded-xl border border-gray-100">
-                                        {formData.interest_level === 'hot' ? (
+                                        {formData.payment_method === 'upfront' ? (
+                                            <p className="text-xs font-medium text-gray-600">
+                                                <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-2" />
+                                                <strong>Cash/Upfront Payment:</strong> KYC verification will be skipped. Lead goes directly to product selection.
+                                            </p>
+                                        ) : formData.interest_level === 'hot' ? (
                                             <p className="text-xs font-medium text-gray-600">
                                                 <span className="inline-block w-2 h-2 bg-red-500 rounded-full mr-2" />
                                                 <strong>Hot Lead:</strong> After creating, you will proceed directly to KYC (Step 2).

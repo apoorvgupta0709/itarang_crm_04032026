@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { leads } from '@/lib/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { runLeadQualification } from '@/lib/ai/langgraph/lead-qualification-graph';
+import { getAICallerEnabled } from '@/lib/ai/settings';
 
 export async function POST(req: NextRequest) {
     try {
@@ -12,6 +13,15 @@ export async function POST(req: NextRequest) {
 
         if (!Array.isArray(leadIds) || leadIds.length === 0) {
             return NextResponse.json({ success: false, error: { message: 'leadIds array required' } }, { status: 400 });
+        }
+
+        // Check global AI caller toggle
+        const aiEnabled = await getAICallerEnabled();
+        if (!aiEnabled) {
+            return NextResponse.json(
+                { success: false, error: { message: 'AI caller is currently disabled. Enable it from the AI Dialer settings.' } },
+                { status: 403 }
+            );
         }
 
         const now = new Date();

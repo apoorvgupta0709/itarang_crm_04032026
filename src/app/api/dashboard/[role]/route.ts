@@ -403,5 +403,66 @@ export const GET = withErrorHandler(async (req: Request, { params }: { params: P
         });
     }
 
+    if (role === 'sales_executive') {
+        const [leadStats] = await db
+            .select({
+                activeLeads: count(),
+                hotLeads: sql<number>`COUNT(*) FILTER (WHERE interest_level = 'hot')::integer`,
+                warmLeads: sql<number>`COUNT(*) FILTER (WHERE interest_level = 'warm')::integer`,
+            })
+            .from(leads)
+            .innerJoin(leadAssignments, eq(leads.id, leadAssignments.lead_id))
+            .where(eq(leadAssignments.lead_owner, user.id));
+
+        return successResponse({
+            activeLeads: Number(leadStats?.activeLeads || 0),
+            hotLeads: Number(leadStats?.hotLeads || 0),
+            warmLeads: Number(leadStats?.warmLeads || 0),
+            lastUpdated: new Date().toISOString()
+        });
+    }
+
+    if (role === 'inventory_manager') {
+        const [invStats] = await db
+            .select({
+                totalItems: count(),
+                available: count(sql`CASE WHEN status = 'available' THEN 1 END`),
+                allocated: count(sql`CASE WHEN status = 'allocated' THEN 1 END`),
+            })
+            .from(inventory);
+
+        const [orderStats] = await db
+            .select({
+                pendingDelivery: count(sql`CASE WHEN delivery_status = 'pending' THEN 1 END`),
+            })
+            .from(orders);
+
+        return successResponse({
+            totalItems: Number(invStats?.totalItems || 0),
+            available: Number(invStats?.available || 0),
+            allocated: Number(invStats?.allocated || 0),
+            pendingDelivery: Number(orderStats?.pendingDelivery || 0),
+            lastUpdated: new Date().toISOString()
+        });
+    }
+
+    if (role === 'dealer') {
+        const [leadStats] = await db
+            .select({
+                totalLeads: count(),
+                activeLeads: count(sql`CASE WHEN lead_status = 'active' OR status = 'ACTIVE' THEN 1 END`),
+                hotLeads: count(sql`CASE WHEN interest_level = 'hot' THEN 1 END`),
+            })
+            .from(leads)
+            .where(eq(leads.dealer_id, user.dealer_id || ''));
+
+        return successResponse({
+            totalLeads: Number(leadStats?.totalLeads || 0),
+            activeLeads: Number(leadStats?.activeLeads || 0),
+            hotLeads: Number(leadStats?.hotLeads || 0),
+            lastUpdated: new Date().toISOString()
+        });
+    }
+
     return successResponse({ message: `Dashboard for role ${role} is under construction` });
 });

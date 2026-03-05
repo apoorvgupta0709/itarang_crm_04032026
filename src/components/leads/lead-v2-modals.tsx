@@ -78,24 +78,51 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
     const [error, setError] = useState<string | null>(null);
     const [partialFields, setPartialFields] = useState<string[]>([]);
     const [progress, setProgress] = useState(0);
+    const [statusMessage, setStatusMessage] = useState<string | null>(null);
+    const [frontUploaded, setFrontUploaded] = useState(false);
+    const [backUploaded, setBackUploaded] = useState(false);
+
+    const isOnline = () => typeof navigator !== 'undefined' ? navigator.onLine : true;
 
     const fetchWithRetry = async (url: string, options: any, retries = 3) => {
         let lastError;
         for (let i = 0; i < retries; i++) {
+            if (!isOnline()) throw new Error("Connection lost. Please check your internet and retry.");
             try {
-                const res = await fetch(url, { ...options, credentials: 'include' });
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 30000);
+                const res = await fetch(url, { ...options, credentials: 'include', signal: controller.signal });
+                clearTimeout(timeout);
                 const data = await res.json();
                 if (res.ok && data.success) return data;
 
                 lastError = data.error?.message || data.message || "Request failed";
-                // If 4xx, don't retry usually, but let's be safe for demo
                 if (res.status < 500 && res.status !== 408) throw new Error(lastError);
             } catch (e: any) {
-                lastError = e.message;
+                if (e.name === 'AbortError') {
+                    lastError = "Request timed out. Please try again.";
+                } else if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError') || e.message?.includes('Load failed')) {
+                    lastError = "Connection lost. Please check your internet and retry.";
+                } else {
+                    lastError = e.message;
+                }
                 if (i === retries - 1) throw new Error(lastError);
                 await new Promise(r => setTimeout(r, Math.pow(2, i) * 1000));
             }
         }
+    };
+
+    // File selection handlers with confirmation
+    const handleFrontFile = (file: File | null) => {
+        setFrontFile(file);
+        setFrontUploaded(false);
+        if (file) setStatusMessage(`Front image selected: ${file.name}`);
+    };
+
+    const handleBackFile = (file: File | null) => {
+        setBackFile(file);
+        setBackUploaded(false);
+        if (file) setStatusMessage(`Back image selected: ${file.name}`);
     };
 
     const handleUpload = async () => {
@@ -104,13 +131,19 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
             return;
         }
 
+        if (!isOnline()) {
+            setError("Connection lost. Please check your internet and retry.");
+            return;
+        }
+
         setUploading(true);
         setError(null);
         setPartialFields([]);
         setProgress(5);
+        setStatusMessage("Initializing...");
 
         try {
-            // 0. Ensure Lead exists (Option 1: Lead-first)
+            // 0. Ensure Lead exists
             let currentLeadId = leadId;
             if (!currentLeadId) {
                 setProgress(10);
@@ -118,6 +151,7 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
                 if (!currentLeadId) throw new Error("Could not initialize lead draft");
             }
             setProgress(20);
+            setStatusMessage("Uploading front image...");
 
             // 1. Upload Front
             const frontFormData = new FormData();
@@ -126,7 +160,9 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
             frontFormData.append('leadId', currentLeadId);
 
             const frontData = await fetchWithRetry('/api/documents/upload', { method: 'POST', body: frontFormData });
-            setProgress(50);
+            setProgress(40);
+            setFrontUploaded(true);
+            setStatusMessage("Front image uploaded. Uploading back image...");
 
             // 2. Upload Back
             const backFormData = new FormData();
@@ -135,7 +171,9 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
             backFormData.append('leadId', currentLeadId);
 
             const backData = await fetchWithRetry('/api/documents/upload', { method: 'POST', body: backFormData });
-            setProgress(80);
+            setProgress(60);
+            setBackUploaded(true);
+            setStatusMessage("Both images uploaded. Running OCR extraction...");
 
             // 3. Initiate OCR
             const ocrData = await fetchWithRetry('/api/leads/autofillRequest', {
@@ -154,19 +192,23 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
             if (ocrData.data.ocrStatus === 'partial') {
                 setPartialFields(ocrData.data.missingFields || []);
                 setError(`Partial detection: ${ocrData.data.missingFields?.join(', ')} not found.`);
+                setStatusMessage("OCR completed with partial results.");
                 onAutofill(ocrData.data);
             } else if (ocrData.data.ocrStatus === 'failed') {
                 setError(ocrData.data.ocrError || "Scanning failed. No fields detected.");
+                setStatusMessage(null);
                 onAutofill({ ...ocrData.data, auto_filled: false });
             } else {
+                setStatusMessage("OCR completed successfully!");
                 onAutofill(ocrData.data);
-                onClose();
+                setTimeout(() => onClose(), 500);
             }
 
         } catch (err: any) {
             const msg = err.message || "Failed to process documents after retries";
             setError(msg);
             setProgress(0);
+            setStatusMessage(null);
             onAutofill({
                 ocr_status: 'failed',
                 ocr_error: msg,
@@ -191,14 +233,22 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
-                    <FileUploadSlot label="Aadhaar Front" file={frontFile} setFile={setFrontFile} disabled={uploading} />
-                    <FileUploadSlot label="Aadhaar Back" file={backFile} setFile={setBackFile} disabled={uploading} />
+                    <FileUploadSlot label="Aadhaar Front" file={frontFile} setFile={handleFrontFile} disabled={uploading} uploaded={frontUploaded} />
+                    <FileUploadSlot label="Aadhaar Back" file={backFile} setFile={handleBackFile} disabled={uploading} uploaded={backUploaded} />
                 </div>
+
+                {/* Status / confirmation message */}
+                {statusMessage && (
+                    <div className="p-3 bg-blue-50 border border-blue-100 rounded-xl flex items-center gap-2 text-sm text-blue-700 animate-in fade-in">
+                        {uploading ? <Loader2 className="w-4 h-4 animate-spin shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0 text-green-500" />}
+                        <span className="text-xs font-medium">{statusMessage}</span>
+                    </div>
+                )}
 
                 {uploading && (
                     <div className="space-y-2 animate-in fade-in">
                         <div className="flex justify-between text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                            <span>Step 1: AI Data Extraction</span>
+                            <span>Processing Documents</span>
                             <span>{progress}%</span>
                         </div>
                         <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
@@ -246,20 +296,30 @@ export function AutofillModal({ isOpen, onClose, onAutofill, leadId, ensureLead 
     );
 }
 
-function FileUploadSlot({ label, file, setFile, disabled }: any) {
+function FileUploadSlot({ label, file, setFile, disabled, uploaded }: any) {
     return (
         <div className="space-y-2">
-            <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">{label}</span>
+            <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-gray-700 uppercase tracking-wider">{label}</span>
+                {file && uploaded && (
+                    <span className="text-[10px] font-bold text-green-600 flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Uploaded
+                    </span>
+                )}
+                {file && !uploaded && (
+                    <span className="text-[10px] font-bold text-blue-600">Selected</span>
+                )}
+            </div>
             <label className={`
                 h-40 border-2 border-dashed rounded-xl flex flex-col items-center justify-center p-4 cursor-pointer transition-all
-                ${file ? 'border-green-300 bg-green-50' : 'border-gray-200 bg-gray-50 hover:bg-white hover:border-brand-300'}
+                ${file && uploaded ? 'border-green-400 bg-green-50' : file ? 'border-blue-300 bg-blue-50' : 'border-gray-200 bg-gray-50 hover:bg-white hover:border-brand-300'}
                 ${disabled ? 'opacity-50 cursor-not-allowed pointer-events-none' : ''}
             `}>
                 {file ? (
                     <div className="flex flex-col items-center text-center">
-                        <CheckCircle2 className="w-8 h-8 text-green-500 mb-2" />
+                        <CheckCircle2 className={`w-8 h-8 mb-2 ${uploaded ? 'text-green-500' : 'text-blue-500'}`} />
                         <span className="text-xs font-medium text-gray-700 truncate max-w-full px-2">{file.name}</span>
-                        <span className="text-[10px] text-gray-400 mt-1">Click to change</span>
+                        <span className="text-[10px] text-gray-400 mt-1">{uploaded ? 'Uploaded successfully' : 'Click to change'}</span>
                     </div>
                 ) : (
                     <div className="flex flex-col items-center text-center">

@@ -48,3 +48,6 @@ export type NewAiCallLog = InferInsertModel<typeof schema.aiCallLogs>;
 // Telemetry
 export type DeviceBatteryMap = InferSelectModel<typeof schema.deviceBatteryMap>;
 export type BatteryAlert = InferSelectModel<typeof schema.batteryAlerts>;
+
+// Settings
+export type AppSetting = InferSelectModel<typeof schema.appSettings>;

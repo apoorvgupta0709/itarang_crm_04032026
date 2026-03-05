@@ -4,6 +4,7 @@ import { db } from '@/lib/db';
 import { leads, aiCallLogs } from '@/lib/db/schema';
 import { eq, desc, and, gte } from 'drizzle-orm';
 import { triggerCall } from '@/lib/ai/bolna-client';
+import { getAICallerEnabled } from '@/lib/ai/settings';
 
 // ─── State Definition ────────────────────────────────────────────────────────
 
@@ -37,6 +38,13 @@ const model = new ChatOpenAI({
 
 async function fetchLeadContext(state: State): Promise<Partial<State>> {
     try {
+        // Check global AI caller toggle
+        const aiEnabled = await getAICallerEnabled();
+        if (!aiEnabled) {
+            console.log(`[LangGraph] Skipping lead ${state.leadId}: AI caller globally disabled`);
+            return { error: 'AI_CALLER_DISABLED' };
+        }
+
         const [lead] = await db.select().from(leads).where(eq(leads.id, state.leadId)).limit(1);
         if (!lead) return { error: 'Lead not found' };
 
@@ -259,7 +267,7 @@ async function placeCallWithBolna(state: State): Promise<Partial<State>> {
 // ─── Routing Functions ───────────────────────────────────────────────────────
 
 function shouldStop(state: State): string {
-    if (state.error === 'MANUAL_TAKEOVER' || state.error === 'RATE_LIMIT_EXCEEDED') return END;
+    if (state.error === 'AI_CALLER_DISABLED' || state.error === 'MANUAL_TAKEOVER' || state.error === 'RATE_LIMIT_EXCEEDED') return END;
     if (state.error && !state.error.startsWith('MANUAL') && !state.error.startsWith('RATE')) return END;
     return 'summarizeConversation';
 }

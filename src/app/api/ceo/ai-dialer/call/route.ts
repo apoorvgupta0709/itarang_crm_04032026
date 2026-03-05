@@ -4,6 +4,7 @@ import { runLeadQualification } from '@/lib/ai/langgraph/lead-qualification-grap
 import { db } from '@/lib/db';
 import { leads } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
+import { getAICallerEnabled } from '@/lib/ai/settings';
 
 export async function POST(req: NextRequest) {
     try {
@@ -12,6 +13,15 @@ export async function POST(req: NextRequest) {
 
         if (!leadId) {
             return NextResponse.json({ success: false, error: { message: 'leadId required' } }, { status: 400 });
+        }
+
+        // Check global AI caller toggle
+        const aiEnabled = await getAICallerEnabled();
+        if (!aiEnabled) {
+            return NextResponse.json(
+                { success: false, error: { message: 'AI caller is currently disabled. Enable it from the AI Dialer settings.' } },
+                { status: 403 }
+            );
         }
 
         // Force shouldCall by setting high priority temporarily

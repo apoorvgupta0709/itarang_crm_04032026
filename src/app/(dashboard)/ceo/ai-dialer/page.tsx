@@ -2,20 +2,76 @@
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Phone, PhoneOff, RefreshCw, Clock, Brain, Loader2, AlertTriangle, User, ChevronDown, ChevronUp } from 'lucide-react';
+import { Phone, PhoneOff, RefreshCw, Clock, Brain, Loader2, AlertTriangle, User, ChevronDown, ChevronUp, Power } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type Tab = 'queue' | 'assigned' | 'history';
 
 export default function AIDialerPage() {
     const [activeTab, setActiveTab] = useState<Tab>('queue');
+    const queryClient = useQueryClient();
+
+    const { data: settingsData } = useQuery({
+        queryKey: ['ai-dialer-settings'],
+        queryFn: async () => {
+            const res = await fetch('/api/ceo/ai-dialer/settings');
+            if (!res.ok) return { enabled: true };
+            return (await res.json()).data;
+        },
+    });
+
+    const toggleMutation = useMutation({
+        mutationFn: async (enabled: boolean) => {
+            const res = await fetch('/api/ceo/ai-dialer/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled }),
+            });
+            if (!res.ok) throw new Error('Failed');
+            return (await res.json()).data;
+        },
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ['ai-dialer-settings'] }),
+    });
+
+    const aiEnabled = settingsData?.enabled !== false;
 
     return (
         <div className="space-y-6 pb-12">
-            <div>
-                <h1 className="text-2xl font-bold text-gray-900 tracking-tight">AI Dialer (Bolna)</h1>
-                <p className="text-sm text-gray-500 mt-1">AI-managed lead qualification and call scheduling</p>
+            <div className="flex items-center justify-between">
+                <div>
+                    <h1 className="text-2xl font-bold text-gray-900 tracking-tight">AI Dialer (Bolna)</h1>
+                    <p className="text-sm text-gray-500 mt-1">AI-managed lead qualification and call scheduling</p>
+                </div>
+                <div className="flex items-center gap-3">
+                    <span className={cn('text-sm font-medium', aiEnabled ? 'text-green-700' : 'text-gray-500')}>
+                        AI Caller {aiEnabled ? 'ON' : 'OFF'}
+                    </span>
+                    <button
+                        onClick={() => toggleMutation.mutate(!aiEnabled)}
+                        disabled={toggleMutation.isPending}
+                        className={cn(
+                            'relative inline-flex h-7 w-12 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2',
+                            aiEnabled ? 'bg-green-500' : 'bg-gray-300'
+                        )}
+                    >
+                        <span
+                            className={cn(
+                                'inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform',
+                                aiEnabled ? 'translate-x-6' : 'translate-x-1'
+                            )}
+                        />
+                    </button>
+                </div>
             </div>
+
+            {!aiEnabled && (
+                <div className="flex items-center gap-2 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl">
+                    <Power className="w-4 h-4 text-amber-600 shrink-0" />
+                    <p className="text-sm text-amber-800">
+                        AI automation is paused. No automated calls will be placed. Manual &ldquo;Call Now&rdquo; is still available.
+                    </p>
+                </div>
+            )}
 
             {/* Tab Bar */}
             <div className="flex items-center gap-1 p-1 bg-gray-100 rounded-xl">

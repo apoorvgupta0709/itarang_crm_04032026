@@ -24,6 +24,7 @@ const step1Schema = z.object({
     vehicle_owner_name: z.string().optional().nullable(),
     vehicle_owner_phone: z.string().optional().nullable(),
     interested_in: z.array(z.string()).optional(),
+    payment_method: z.enum(['upfront', 'finance']).optional().nullable(),
     initializeDraft: z.boolean().optional(),
     commitStep: z.boolean().optional(),
     leadId: z.string().optional().nullable(),
@@ -92,37 +93,52 @@ export const POST = withErrorHandler(async (req: Request) => {
     // MODE 1: INITIALIZE DRAFT
     if (data.initializeDraft) {
         try {
-            // Resume existing incomplete draft for this user
-            const [existing] = await db.select().from(leads).where(
-                and(
-                    eq(leads.uploader_id, user.id),
-                    eq(leads.status, 'INCOMPLETE')
-                )
-            ).limit(1);
+            const isFresh = data.fresh === true;
 
-            if (existing) {
-                return successResponse({
-                    leadId: existing.id,
-                    referenceId: existing.reference_id,
-                    formData: {
-                        full_name: existing.full_name,
-                        phone: existing.phone,
-                        current_address: existing.current_address,
-                        permanent_address: existing.permanent_address,
-                        is_current_same: existing.is_current_same,
-                        product_category_id: existing.product_category_id,
-                        product_type_id: existing.product_type_id,
-                        primary_product_id: existing.primary_product_id,
-                        interest_level: existing.interest_level,
-                        dob: existing.dob ? new Date(existing.dob).toISOString().split('T')[0] : '',
-                        father_or_husband_name: existing.father_or_husband_name,
-                        vehicle_rc: existing.vehicle_rc,
-                        vehicle_ownership: existing.vehicle_ownership,
-                        vehicle_owner_name: existing.vehicle_owner_name,
-                        vehicle_owner_phone: existing.vehicle_owner_phone,
-                        interested_in: existing.interested_in || []
-                    }
-                });
+            // If fresh, mark old incomplete drafts as ABANDONED
+            if (isFresh) {
+                await db.update(leads)
+                    .set({ status: 'ABANDONED', updated_at: new Date() })
+                    .where(
+                        and(
+                            eq(leads.uploader_id, user.id),
+                            eq(leads.status, 'INCOMPLETE')
+                        )
+                    );
+            } else {
+                // Resume existing incomplete draft for this user
+                const [existing] = await db.select().from(leads).where(
+                    and(
+                        eq(leads.uploader_id, user.id),
+                        eq(leads.status, 'INCOMPLETE')
+                    )
+                ).limit(1);
+
+                if (existing) {
+                    return successResponse({
+                        leadId: existing.id,
+                        referenceId: existing.reference_id,
+                        resumed: true,
+                        formData: {
+                            full_name: existing.full_name,
+                            phone: existing.phone,
+                            current_address: existing.current_address,
+                            permanent_address: existing.permanent_address,
+                            is_current_same: existing.is_current_same,
+                            product_category_id: existing.product_category_id,
+                            product_type_id: existing.product_type_id,
+                            primary_product_id: existing.primary_product_id,
+                            interest_level: existing.interest_level,
+                            dob: existing.dob ? new Date(existing.dob).toISOString().split('T')[0] : '',
+                            father_or_husband_name: existing.father_or_husband_name,
+                            vehicle_rc: existing.vehicle_rc,
+                            vehicle_ownership: existing.vehicle_ownership,
+                            vehicle_owner_name: existing.vehicle_owner_name,
+                            vehicle_owner_phone: existing.vehicle_owner_phone,
+                            interested_in: existing.interested_in || []
+                        }
+                    });
+                }
             }
 
             const leadId = await generateId('LEAD', leads);
@@ -182,6 +198,7 @@ export const POST = withErrorHandler(async (req: Request) => {
         const normPhone = normalizePhone(data.phone)!;
         const normOwnerPhone = normalizePhone(data.vehicle_owner_phone);
         const score = data.interest_level === 'hot' ? 90 : data.interest_level === 'warm' ? 60 : 30;
+        const isUpfront = data.payment_method === 'upfront';
 
         try {
             await db.transaction(async (tx) => {
@@ -206,6 +223,10 @@ export const POST = withErrorHandler(async (req: Request) => {
                     vehicle_owner_name: data.vehicle_owner_name?.trim(),
                     vehicle_owner_phone: normOwnerPhone,
                     interested_in: data.interested_in || [],
+                    payment_method: data.payment_method || 'finance',
+                    kyc_status: isUpfront ? 'not_required' : 'not_started',
+                    workflow_step: isUpfront ? 3 : 1,
+                    status: 'ACTIVE',
                     updated_at: new Date()
                 }).where(eq(leads.id, data.leadId!));
 

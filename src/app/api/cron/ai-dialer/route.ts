@@ -3,9 +3,10 @@ import { db } from '@/lib/db';
 import { leads } from '@/lib/db/schema';
 import { eq, and, lte, sql } from 'drizzle-orm';
 import { runLeadQualification } from '@/lib/ai/langgraph/lead-qualification-graph';
+import { getAICallerEnabled } from '@/lib/ai/settings';
 
-// Vercel cron: runs every 15 minutes
-// Configured in vercel.json: { "path": "/api/cron/ai-dialer", "schedule": "*/15 * * * *" }
+// Vercel cron: runs once per day at 3AM UTC
+// Configured in vercel.json: { "path": "/api/cron/ai-dialer", "schedule": "0 3 * * *" }
 
 export async function GET(req: NextRequest) {
     // Verify cron secret (Vercel sets this header automatically for cron jobs)
@@ -15,6 +16,18 @@ export async function GET(req: NextRequest) {
     }
 
     try {
+        // Check global AI caller toggle
+        const aiEnabled = await getAICallerEnabled();
+        if (!aiEnabled) {
+            console.log('[AI Dialer Cron] Skipped: AI caller is globally disabled');
+            return NextResponse.json({
+                success: true,
+                skipped: true,
+                reason: 'AI caller disabled',
+                timestamp: new Date().toISOString(),
+            });
+        }
+
         const now = new Date();
         const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 

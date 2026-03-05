@@ -54,12 +54,22 @@ async function preprocessImage(buffer: Buffer): Promise<Buffer> {
         .toBuffer();
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label = 'Operation'): Promise<T> {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms / 1000}s`)), ms);
+        promise.then(
+            val => { clearTimeout(timer); resolve(val); },
+            err => { clearTimeout(timer); reject(err); }
+        );
+    });
+}
+
 export async function extractTextFromImageBuffer(buffer: Buffer): Promise<string> {
     await acquireWorker();
     try {
         const processed = await preprocessImage(buffer);
-        const worker = await getWorker();
-        const result = await worker.recognize(processed);
+        const worker = await withTimeout(getWorker(), 10000, 'Worker initialization');
+        const result = await withTimeout(worker.recognize(processed), 15000, 'OCR processing');
         return result?.data?.text ?? "";
     } finally {
         releaseWorker();
