@@ -1,10 +1,17 @@
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID!,
-    key_secret: process.env.RAZORPAY_KEY_SECRET!,
-});
+let _razorpay: Razorpay | null = null;
+
+function getRazorpay(): Razorpay {
+    if (!_razorpay) {
+        _razorpay = new Razorpay({
+            key_id: process.env.RAZORPAY_KEY_ID!,
+            key_secret: process.env.RAZORPAY_KEY_SECRET!,
+        });
+    }
+    return _razorpay;
+}
 
 export interface CreateQrParams {
     amount: number; // in rupees (will be converted to paise)
@@ -38,7 +45,7 @@ export async function createPaymentQr(params: CreateQrParams): Promise<QrCodeRes
     const amountInPaise = Math.round(amount * 100);
     const closeBy = Math.floor(Date.now() / 1000) + expiresInMinutes * 60;
 
-    const qr = await razorpay.qrCode.create({
+    const qr = await getRazorpay().qrCode.create({
         type: 'upi_qr',
         name: customerName,
         usage: 'single_use',
@@ -66,21 +73,21 @@ export async function createPaymentQr(params: CreateQrParams): Promise<QrCodeRes
  * Fetch QR code status from Razorpay
  */
 export async function fetchQrStatus(qrId: string) {
-    return razorpay.qrCode.fetch(qrId);
+    return getRazorpay().qrCode.fetch(qrId);
 }
 
 /**
  * Close/expire a QR code
  */
 export async function closeQrCode(qrId: string) {
-    return razorpay.qrCode.close(qrId);
+    return getRazorpay().qrCode.close(qrId);
 }
 
 /**
  * Fetch payments received on a QR code
  */
 export async function fetchQrPayments(qrId: string) {
-    return razorpay.qrCode.fetchAllPayments(qrId, {});
+    return getRazorpay().qrCode.fetchAllPayments(qrId, {});
 }
 
 /**
@@ -126,4 +133,4 @@ export function calculateDiscount(
     return Math.min(discount, baseAmount);
 }
 
-export default razorpay;
+export default getRazorpay;
