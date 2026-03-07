@@ -6,7 +6,7 @@ import {
     ChevronLeft, Loader2, Upload, CheckCircle2, XCircle,
     AlertCircle, Clock, Info, X, FileText, Camera, Shield,
     Send, Download, CreditCard, RefreshCw, Eye, ChevronRight,
-    QrCode, Tag, Timer, ArrowRight
+    QrCode, Tag, Timer, ArrowRight, Table2, Landmark
 } from 'lucide-react';
 import { useAuth } from '@/components/auth/AuthProvider';
 
@@ -116,7 +116,14 @@ export default function KYCPage() {
     const [manualFields, setManualFields] = useState<Record<string, string>>({
         name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '',
     });
+    const [bankManualFields, setBankManualFields] = useState({
+        account_holder_name: '', account_number: '', confirm_account_number: '',
+        ifsc: '', bank_name: '', branch: '', account_type: 'savings',
+    });
+    const [bankManualErrors, setBankManualErrors] = useState<Record<string, string>>({});
+    const [showBankManual, setShowBankManual] = useState(false);
     const [savingManual, setSavingManual] = useState(false);
+    const [manualEntryTab, setManualEntryTab] = useState<'document' | 'bank'>('document');
 
     // ── Verification State ──
     const [verifications, setVerifications] = useState<VerificationRow[]>([]);
@@ -450,6 +457,114 @@ export default function KYCPage() {
         finally { setSavingManual(false); }
     };
 
+    // ── Bank Manual Entry ──────────────────────────────────────────────────────
+
+    const validateBankFields = () => {
+        const errs: Record<string, string> = {};
+        if (!bankManualFields.account_holder_name.trim()) errs.account_holder_name = 'Required';
+        if (!bankManualFields.account_number.trim()) errs.account_number = 'Required';
+        else if (bankManualFields.account_number.length < 9 || bankManualFields.account_number.length > 18) errs.account_number = '9-18 digits required';
+        if (bankManualFields.account_number !== bankManualFields.confirm_account_number) errs.confirm_account_number = 'Account numbers do not match';
+        if (!bankManualFields.ifsc.trim()) errs.ifsc = 'Required';
+        else if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(bankManualFields.ifsc)) errs.ifsc = 'Invalid IFSC format (e.g. SBIN0001234)';
+        if (!bankManualFields.bank_name.trim()) errs.bank_name = 'Required';
+        setBankManualErrors(errs);
+        return Object.keys(errs).length === 0;
+    };
+
+    const handleSaveBankManual = async () => {
+        if (!validateBankFields()) return;
+        setSavingManual(true);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/save-draft`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    step: 2,
+                    data: { bankManualData: bankManualFields, paymentMethod, documents: uploadedDocs, consentStatus },
+                }),
+            });
+            if (res.ok) {
+                setShowBankManual(false);
+                setApiError(null);
+            }
+        } catch { setApiError('Failed to save bank details'); }
+        finally { setSavingManual(false); }
+    };
+
+    // ── Comparison Table Helpers ───────────────────────────────────────────────
+
+    const maskValue = (val: string | null | undefined, type: 'aadhaar' | 'pan' | 'account') => {
+        if (!val) return null;
+        if (type === 'aadhaar' && val.length >= 8) return 'XXXX XXXX ' + val.slice(-4);
+        if (type === 'pan' && val.length >= 6) return val.slice(0, 2) + 'XXXX' + val.slice(-2);
+        if (type === 'account' && val.length >= 4) return 'XXXXX' + val.slice(-4);
+        return val;
+    };
+
+    const buildComparisonRows = () => {
+        const rows: Array<{
+            field: string; label: string;
+            step1Value: string | null; ocrValue: string | null; manualValue: string | null;
+            finalValue: string | null; matchStatus: 'match' | 'mismatch' | 'pending';
+            source: string; remarks: string;
+        }> = [];
+
+        const allOcr: Record<string, any> = {};
+        Object.values(uploadedDocs).forEach(doc => {
+            if (doc.ocr_data) Object.assign(allOcr, doc.ocr_data);
+        });
+
+        const allManual: Record<string, string> = { ...manualFields };
+        if (bankManualFields.account_holder_name) Object.assign(allManual, bankManualFields);
+
+        const addRow = (field: string, label: string, step1Key: string | null, ocrKey: string | null, manualKey: string | null, mask?: 'aadhaar' | 'pan' | 'account') => {
+            const s1 = step1Key && lead ? (lead[step1Key] || null) : null;
+            const ocr = ocrKey ? (allOcr[ocrKey] || null) : null;
+            const manual = manualKey ? (allManual[manualKey] || null) : null;
+            const verified = ocr || manual;
+            const finalVal = verified || s1;
+            const displayS1 = mask ? maskValue(s1, mask) : s1;
+            const displayOcr = mask ? maskValue(ocr, mask) : ocr;
+            const displayManual = mask ? maskValue(manual, mask) : manual;
+            const displayFinal = mask ? maskValue(finalVal, mask) : finalVal;
+
+            let matchStatus: 'match' | 'mismatch' | 'pending' = 'pending';
+            if (s1 && ocr) {
+                matchStatus = s1.trim().toLowerCase() === ocr.trim().toLowerCase() ? 'match' : 'mismatch';
+            } else if (s1 && manual) {
+                matchStatus = s1.trim().toLowerCase() === manual.trim().toLowerCase() ? 'match' : 'mismatch';
+            }
+
+            let source = 'None';
+            if (ocr) source = 'OCR/API';
+            else if (manual) source = 'Manual';
+            else if (s1) source = 'Step 1';
+
+            rows.push({ field, label, step1Value: displayS1, ocrValue: displayOcr, manualValue: displayManual, finalValue: displayFinal, matchStatus, source, remarks: matchStatus === 'mismatch' ? 'Needs review' : '' });
+        };
+
+        addRow('full_name', 'Full Name', 'full_name', 'full_name', 'name');
+        addRow('father_name', 'Father/Husband Name', 'father_or_husband_name', 'father_or_husband_name', 'father_name');
+        addRow('dob', 'Date of Birth', 'dob', 'date_of_birth', 'dob');
+        addRow('phone', 'Phone Number', 'phone', 'phone_number', null);
+        addRow('address', 'Address', 'current_address', 'address', 'address');
+        addRow('aadhaar_number', 'Aadhaar Number', null, 'aadhaar_number', 'aadhaar_number', 'aadhaar');
+        addRow('pan_number', 'PAN Number', null, 'pan_number', 'pan_number', 'pan');
+        addRow('bank_holder', 'Bank Account Holder', null, null, 'account_holder_name');
+        addRow('account_number', 'Account Number', null, null, 'account_number', 'account');
+        addRow('ifsc', 'IFSC', null, null, 'ifsc');
+
+        return rows;
+    };
+
+    const getComparisonSummary = (rows: ReturnType<typeof buildComparisonRows>) => {
+        const matched = rows.filter(r => r.matchStatus === 'match').length;
+        const mismatched = rows.filter(r => r.matchStatus === 'mismatch').length;
+        const pending = rows.filter(r => r.matchStatus === 'pending').length;
+        return { matched, mismatched, pending };
+    };
+
     // ── Consent ──────────────────────────────────────────────────────────────
 
     const handleSendConsent = async (channel: 'sms' | 'whatsapp') => {
@@ -672,6 +787,29 @@ export default function KYCPage() {
                         </div>
                     </div>
                 </header>
+
+                {/* Step 2 Sub-Progress */}
+                <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
+                    {[
+                        { label: 'Payment', done: !isFinance || feePaid, active: isFinance && !feePaid },
+                        { label: 'Documents', done: docStats.uploaded === docStats.total, active: (!isFinance || feePaid) && docStats.uploaded < docStats.total },
+                        { label: 'Verification', done: verifications.some(v => v.status === 'success'), active: docStats.uploaded === docStats.total && !verifications.some(v => v.status === 'success') },
+                        { label: 'Consent', done: ['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus), active: false },
+                        { label: 'Review', done: false, active: false },
+                    ].map((s, i) => (
+                        <div key={s.label} className="flex items-center gap-2">
+                            {i > 0 && <div className={`w-8 h-[2px] ${s.done || s.active ? 'bg-[#0047AB]' : 'bg-gray-200'}`} />}
+                            <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap ${
+                                s.done ? 'bg-green-50 text-green-700 border border-green-200'
+                                    : s.active ? 'bg-blue-50 text-[#0047AB] border border-blue-200'
+                                        : 'bg-gray-50 text-gray-400 border border-gray-100'
+                            }`}>
+                                {s.done ? <CheckCircle2 className="w-3.5 h-3.5" /> : s.active ? <div className="w-2 h-2 bg-[#0047AB] rounded-full animate-pulse" /> : <div className="w-2 h-2 bg-gray-300 rounded-full" />}
+                                {s.label}
+                            </div>
+                        </div>
+                    ))}
+                </div>
 
                 {/* Error Banner */}
                 {apiError && (
@@ -980,52 +1118,137 @@ export default function KYCPage() {
                     )}
 
                     {/* ═══════════════════════════════════════════════════════════
-                        SECTION 4: MANUAL ENTRY FALLBACK
+                        SECTION 4: MANUAL ENTRY FALLBACK (Document + Bank)
                        ═══════════════════════════════════════════════════════════ */}
-                    {manualEntryDoc && (
+                    {(manualEntryDoc || showBankManual) && (
                         <SectionCard title="Manual Data Entry" icon={<FileText className="w-5 h-5 text-amber-500" />}>
-                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl mb-4">
-                                <div className="flex items-center gap-2 text-amber-700 text-sm font-medium mb-1">
-                                    <AlertCircle className="w-4 h-4" />
-                                    OCR could not extract data from <strong className="capitalize">{manualEntryDoc.replace(/_/g, ' ')}</strong>
+                            {/* Tabs */}
+                            {manualEntryDoc && (
+                                <div className="flex gap-2 mb-4">
+                                    <button onClick={() => setManualEntryTab('document')}
+                                        className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${manualEntryTab === 'document' ? 'bg-[#0047AB] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                                        Document Details
+                                    </button>
+                                    <button onClick={() => { setManualEntryTab('bank'); setShowBankManual(true); }}
+                                        className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${manualEntryTab === 'bank' ? 'bg-[#0047AB] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                                        <Landmark className="w-3 h-3 inline mr-1" /> Bank Details
+                                    </button>
                                 </div>
-                                <p className="text-xs text-amber-600">Please enter the details manually from the document.</p>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {(manualEntryDoc.includes('aadhaar') || manualEntryDoc.includes('pan')) && (
-                                    <>
-                                        <InputField label="Full Name (as on document)" value={manualFields.name} onChange={v => setManualFields(p => ({ ...p, name: v }))} placeholder="Full name as printed" />
-                                        <InputField label="Father/Husband Name" value={manualFields.father_name} onChange={v => setManualFields(p => ({ ...p, father_name: v }))} placeholder="Father or husband name" />
-                                        <InputField label="Date of Birth" type="date" value={manualFields.dob} onChange={v => setManualFields(p => ({ ...p, dob: v }))} />
-                                    </>
-                                )}
-                                {manualEntryDoc.includes('aadhaar') && (
-                                    <>
-                                        <InputField label="Aadhaar Number" value={manualFields.aadhaar_number} onChange={v => setManualFields(p => ({ ...p, aadhaar_number: v.replace(/\D/g, '').slice(0, 12) }))} placeholder="12-digit Aadhaar" maxLength={12} mono />
-                                        <div className="space-y-1 md:col-span-2">
-                                            <label className="text-xs font-bold text-gray-700">Address</label>
-                                            <textarea
-                                                value={manualFields.address}
-                                                onChange={e => setManualFields(p => ({ ...p, address: e.target.value }))}
-                                                className="w-full h-20 px-3 py-2 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] resize-none"
-                                                placeholder="Full address as on Aadhaar"
-                                            />
+                            )}
+
+                            {/* Document Manual Entry */}
+                            {manualEntryTab === 'document' && manualEntryDoc && (
+                                <>
+                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl mb-4">
+                                        <div className="flex items-center gap-2 text-amber-700 text-sm font-medium mb-1">
+                                            <AlertCircle className="w-4 h-4" />
+                                            OCR could not extract data from <strong className="capitalize">{manualEntryDoc.replace(/_/g, ' ')}</strong>
                                         </div>
-                                    </>
-                                )}
-                                {manualEntryDoc.includes('pan') && (
-                                    <InputField label="PAN Number" value={manualFields.pan_number} onChange={v => setManualFields(p => ({ ...p, pan_number: v.toUpperCase().slice(0, 10) }))} placeholder="ABCDE1234F" maxLength={10} mono upper />
-                                )}
-                            </div>
-                            <div className="flex justify-end gap-3 mt-4">
-                                <button onClick={() => { setManualEntryDoc(null); setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' }); }}
-                                    className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
-                                <button onClick={handleSaveManualEntry} disabled={savingManual || !manualFields.name}
-                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
-                                    {savingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
-                                    Save Manual Entry
-                                </button>
-                            </div>
+                                        <p className="text-xs text-amber-600">Please enter the details manually from the document.</p>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {(manualEntryDoc.includes('aadhaar') || manualEntryDoc.includes('pan')) && (
+                                            <>
+                                                <InputField label="Full Name (as on document)" value={manualFields.name} onChange={v => setManualFields(p => ({ ...p, name: v }))} placeholder="Full name as printed" />
+                                                <InputField label="Father/Husband Name" value={manualFields.father_name} onChange={v => setManualFields(p => ({ ...p, father_name: v }))} placeholder="Father or husband name" />
+                                                <InputField label="Date of Birth" type="date" value={manualFields.dob} onChange={v => setManualFields(p => ({ ...p, dob: v }))} />
+                                            </>
+                                        )}
+                                        {manualEntryDoc.includes('aadhaar') && (
+                                            <>
+                                                <div className="space-y-1">
+                                                    <label className="text-xs font-bold text-gray-700">Aadhaar Number</label>
+                                                    <input
+                                                        value={manualFields.aadhaar_number}
+                                                        onChange={e => setManualFields(p => ({ ...p, aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
+                                                        placeholder="12-digit Aadhaar" maxLength={12}
+                                                        className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
+                                                    />
+                                                    {manualFields.aadhaar_number && manualFields.aadhaar_number.length !== 12 && (
+                                                        <p className="text-[10px] text-red-500 font-bold">Must be exactly 12 digits</p>
+                                                    )}
+                                                </div>
+                                                <div className="space-y-1 md:col-span-2">
+                                                    <label className="text-xs font-bold text-gray-700">Address</label>
+                                                    <textarea
+                                                        value={manualFields.address}
+                                                        onChange={e => setManualFields(p => ({ ...p, address: e.target.value }))}
+                                                        className="w-full h-20 px-3 py-2 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] resize-none"
+                                                        placeholder="Full address as on Aadhaar"
+                                                    />
+                                                </div>
+                                            </>
+                                        )}
+                                        {manualEntryDoc.includes('pan') && (
+                                            <div className="space-y-1">
+                                                <label className="text-xs font-bold text-gray-700">PAN Number</label>
+                                                <input
+                                                    value={manualFields.pan_number}
+                                                    onChange={e => setManualFields(p => ({ ...p, pan_number: e.target.value.toUpperCase().slice(0, 10) }))}
+                                                    placeholder="ABCDE1234F" maxLength={10}
+                                                    className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]"
+                                                />
+                                                {manualFields.pan_number && !/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(manualFields.pan_number) && (
+                                                    <p className="text-[10px] text-red-500 font-bold">Invalid PAN format (e.g. ABCDE1234F)</p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="flex justify-end gap-3 mt-4">
+                                        <button onClick={() => { setManualEntryDoc(null); setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' }); }}
+                                            className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+                                        <button onClick={handleSaveManualEntry} disabled={savingManual || !manualFields.name}
+                                            className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
+                                            {savingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                            Save Manual Entry
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+
+                            {/* Bank Manual Entry */}
+                            {(manualEntryTab === 'bank' || (!manualEntryDoc && showBankManual)) && (
+                                <>
+                                    <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl mb-4">
+                                        <div className="flex items-center gap-2 text-blue-700 text-sm font-medium">
+                                            <Landmark className="w-4 h-4" />
+                                            Enter bank account details for verification
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <InputField label="Account Holder Name *" value={bankManualFields.account_holder_name}
+                                            onChange={v => setBankManualFields(p => ({ ...p, account_holder_name: v }))} placeholder="Name as per bank records" error={bankManualErrors.account_holder_name} />
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-gray-700">Account Type</label>
+                                            <select value={bankManualFields.account_type}
+                                                onChange={e => setBankManualFields(p => ({ ...p, account_type: e.target.value }))}
+                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]">
+                                                <option value="savings">Savings</option>
+                                                <option value="current">Current</option>
+                                            </select>
+                                        </div>
+                                        <InputField label="Account Number *" value={bankManualFields.account_number}
+                                            onChange={v => setBankManualFields(p => ({ ...p, account_number: v.replace(/\D/g, '') }))} placeholder="Account number" mono error={bankManualErrors.account_number} />
+                                        <InputField label="Confirm Account Number *" value={bankManualFields.confirm_account_number}
+                                            onChange={v => setBankManualFields(p => ({ ...p, confirm_account_number: v.replace(/\D/g, '') }))} placeholder="Re-enter account number" mono error={bankManualErrors.confirm_account_number} />
+                                        <InputField label="IFSC Code *" value={bankManualFields.ifsc}
+                                            onChange={v => setBankManualFields(p => ({ ...p, ifsc: v.toUpperCase().slice(0, 11) }))} placeholder="e.g. SBIN0001234" mono upper error={bankManualErrors.ifsc} />
+                                        <InputField label="Bank Name *" value={bankManualFields.bank_name}
+                                            onChange={v => setBankManualFields(p => ({ ...p, bank_name: v }))} placeholder="e.g. State Bank of India" error={bankManualErrors.bank_name} />
+                                        <InputField label="Branch (optional)" value={bankManualFields.branch}
+                                            onChange={v => setBankManualFields(p => ({ ...p, branch: v }))} placeholder="Branch name" />
+                                    </div>
+                                    <div className="flex justify-end gap-3 mt-4">
+                                        <button onClick={() => { setShowBankManual(false); if (manualEntryDoc) setManualEntryTab('document'); }}
+                                            className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+                                        <button onClick={handleSaveBankManual} disabled={savingManual}
+                                            className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
+                                            {savingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                            Save Bank Details
+                                        </button>
+                                    </div>
+                                </>
+                            )}
                         </SectionCard>
                     )}
 
@@ -1099,10 +1322,16 @@ export default function KYCPage() {
                                     <input value={bankName} onChange={e => setBankName(e.target.value)}
                                         placeholder="Account Holder Name (optional)" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]" />
                                 </div>
-                                <button onClick={handleBankVerify} disabled={bankVerifying || !bankAccountNo || !bankIfsc}
-                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
-                                    {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify Account
-                                </button>
+                                <div className="flex gap-3">
+                                    <button onClick={handleBankVerify} disabled={bankVerifying || !bankAccountNo || !bankIfsc}
+                                        className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
+                                        {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify Account
+                                    </button>
+                                    <button onClick={() => { setShowBankManual(true); setManualEntryTab('bank'); }}
+                                        className="px-4 py-2 border-2 border-gray-200 rounded-xl text-xs font-bold text-gray-600 hover:border-[#0047AB] flex items-center gap-1">
+                                        <FileText className="w-3 h-3" /> Enter Manually
+                                    </button>
+                                </div>
                                 {bankResult && (
                                     <div className={`p-3 rounded-xl text-xs font-medium ${bankResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
                                         {bankResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
@@ -1208,6 +1437,75 @@ export default function KYCPage() {
                             </div>
                         </SectionCard>
                     )}
+
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 8: COMPARISON + VALIDATION TABLE
+                       ═══════════════════════════════════════════════════════════ */}
+                    {(Object.keys(uploadedDocs).length > 0 || Object.keys(manualFields).some(k => manualFields[k]) || bankManualFields.account_holder_name) && (() => {
+                        const rows = buildComparisonRows();
+                        const summary = getComparisonSummary(rows);
+                        const hasData = rows.some(r => r.step1Value || r.ocrValue || r.manualValue);
+                        if (!hasData) return null;
+                        return (
+                            <SectionCard title="Comparison & Validation Summary" icon={<Table2 className="w-5 h-5 text-[#0047AB]" />}>
+                                {/* Summary badges */}
+                                <div className="flex gap-4 mb-4">
+                                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-green-50 border border-green-200 rounded-full text-xs font-bold text-green-700">
+                                        <CheckCircle2 className="w-3.5 h-3.5" /> {summary.matched} Matched
+                                    </div>
+                                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-full text-xs font-bold text-red-700">
+                                        <XCircle className="w-3.5 h-3.5" /> {summary.mismatched} Mismatched
+                                    </div>
+                                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-full text-xs font-bold text-gray-500">
+                                        <Clock className="w-3.5 h-3.5" /> {summary.pending} Pending
+                                    </div>
+                                </div>
+
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="border-b-2 border-gray-200">
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Field</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Step 1 Value</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">OCR / API</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Manual</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Final Value</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Status</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Source</th>
+                                                <th className="text-left py-2.5 px-3 text-[10px] font-black text-gray-500 uppercase">Remarks</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {rows.map(r => (
+                                                <tr key={r.field} className={`border-b border-gray-50 ${
+                                                    r.matchStatus === 'mismatch' ? 'bg-red-50/50' : r.matchStatus === 'match' ? 'bg-green-50/30' : ''
+                                                }`}>
+                                                    <td className="py-2.5 px-3 font-medium text-gray-900 text-xs">{r.label}</td>
+                                                    <td className="py-2.5 px-3 text-gray-700 font-mono text-[11px]">{r.step1Value || <span className="text-gray-300 italic">-</span>}</td>
+                                                    <td className="py-2.5 px-3 text-gray-700 font-mono text-[11px]">{r.ocrValue || <span className="text-gray-300 italic">-</span>}</td>
+                                                    <td className="py-2.5 px-3 text-gray-700 font-mono text-[11px]">{r.manualValue || <span className="text-gray-300 italic">-</span>}</td>
+                                                    <td className="py-2.5 px-3 text-gray-900 font-mono text-[11px] font-bold">{r.finalValue || <span className="text-gray-300 italic">-</span>}</td>
+                                                    <td className="py-2.5 px-3">
+                                                        {r.matchStatus === 'match' ? (
+                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-green-100 text-green-700">Match</span>
+                                                        ) : r.matchStatus === 'mismatch' ? (
+                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-red-100 text-red-700">Mismatch</span>
+                                                        ) : (
+                                                            <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-gray-100 text-gray-500">Pending</span>
+                                                        )}
+                                                    </td>
+                                                    <td className="py-2.5 px-3 text-gray-500 text-[11px]">{r.source}</td>
+                                                    <td className="py-2.5 px-3 text-xs">
+                                                        {r.remarks && <span className="text-amber-600 font-medium">{r.remarks}</span>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </SectionCard>
+                        );
+                    })()}
                 </main>
 
                 {/* ═══════════════════════════════════════════════════════════
@@ -1216,6 +1514,10 @@ export default function KYCPage() {
                 <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50">
                     <div className="max-w-[1200px] mx-auto px-6 py-4 flex items-center justify-between">
                         <div className="flex items-center gap-4">
+                            <button onClick={() => router.push('/dealer-portal/leads')}
+                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 flex items-center gap-2">
+                                <ChevronLeft className="w-4 h-4" /> Back
+                            </button>
                             {lastSaved && <span className="text-xs text-gray-400">{lastSaved}</span>}
                             <button onClick={() => handleSaveDraft(false)} disabled={saving}
                                 className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-2">
@@ -1339,9 +1641,9 @@ function StatusBadge({ status }: { status: VerificationStatus }) {
     return <span className={`px-3 py-1 rounded-full text-[10px] font-bold ${c.bg} ${c.text}`}>{c.label}</span>;
 }
 
-function InputField({ label, value, onChange, placeholder, type = 'text', maxLength, mono, upper }: {
+function InputField({ label, value, onChange, placeholder, type = 'text', maxLength, mono, upper, error }: {
     label: string; value: string; onChange: (v: string) => void;
-    placeholder?: string; type?: string; maxLength?: number; mono?: boolean; upper?: boolean;
+    placeholder?: string; type?: string; maxLength?: number; mono?: boolean; upper?: boolean; error?: string;
 }) {
     return (
         <div className="space-y-1">
@@ -1349,8 +1651,9 @@ function InputField({ label, value, onChange, placeholder, type = 'text', maxLen
             <input
                 type={type} value={value} onChange={e => onChange(upper ? e.target.value.toUpperCase() : e.target.value)}
                 placeholder={placeholder} maxLength={maxLength}
-                className={`w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] ${mono ? 'font-mono' : ''} ${upper ? 'uppercase' : ''}`}
+                className={`w-full h-10 px-3 bg-white border-2 rounded-xl text-sm outline-none focus:border-[#1D4ED8] ${mono ? 'font-mono' : ''} ${upper ? 'uppercase' : ''} ${error ? 'border-red-400' : 'border-[#EBEBEB]'}`}
             />
+            {error && <p className="text-[10px] text-red-500 font-bold">{error}</p>}
         </div>
     );
 }
