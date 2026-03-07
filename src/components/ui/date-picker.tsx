@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 
 const MONTHS = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -29,10 +29,23 @@ export function DatePicker({
     const currentYear = new Date().getFullYear();
     const effectiveMaxYear = maxYear ?? currentYear - minAge;
 
-    const parsed = useMemo(() => {
-        if (!value) return { day: '', month: '', year: '' };
+    // Internal state so partial selections persist visually
+    const [internalDay, setInternalDay] = useState('');
+    const [internalMonth, setInternalMonth] = useState('');
+    const [internalYear, setInternalYear] = useState('');
+
+    // Sync internal state when value prop changes externally (e.g. draft resume)
+    useEffect(() => {
+        if (!value) {
+            setInternalDay('');
+            setInternalMonth('');
+            setInternalYear('');
+            return;
+        }
         const [y, m, d] = value.split('-');
-        return { day: d || '', month: m || '', year: y || '' };
+        if (y) setInternalYear(y);
+        if (m) setInternalMonth(String(Number(m))); // remove leading zero for select match
+        if (d) setInternalDay(String(Number(d)));    // remove leading zero for select match
     }, [value]);
 
     const years = useMemo(() => {
@@ -42,9 +55,9 @@ export function DatePicker({
     }, [effectiveMaxYear, minYear]);
 
     const daysInMonth = useMemo(() => {
-        if (!parsed.year || !parsed.month) return 31;
-        return new Date(Number(parsed.year), Number(parsed.month), 0).getDate();
-    }, [parsed.year, parsed.month]);
+        if (!internalYear || !internalMonth) return 31;
+        return new Date(Number(internalYear), Number(internalMonth), 0).getDate();
+    }, [internalYear, internalMonth]);
 
     const days = useMemo(() => {
         const arr: number[] = [];
@@ -53,31 +66,30 @@ export function DatePicker({
     }, [daysInMonth]);
 
     const age = useMemo(() => {
-        if (!parsed.year || !parsed.month || !parsed.day) return null;
+        if (!internalYear || !internalMonth || !internalDay) return null;
         const today = new Date();
-        const birth = new Date(Number(parsed.year), Number(parsed.month) - 1, Number(parsed.day));
+        const birth = new Date(Number(internalYear), Number(internalMonth) - 1, Number(internalDay));
         let a = today.getFullYear() - birth.getFullYear();
         const monthDiff = today.getMonth() - birth.getMonth();
         if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) a--;
         return a;
-    }, [parsed]);
+    }, [internalDay, internalMonth, internalYear]);
 
     const handleChange = (field: 'day' | 'month' | 'year', val: string) => {
-        const next = { ...parsed, [field]: val };
-        if (next.year && next.month && next.day) {
-            const dd = next.day.padStart(2, '0');
-            const mm = next.month.padStart(2, '0');
-            onChange(`${next.year}-${mm}-${dd}`);
-        } else if (!val) {
+        const nextDay = field === 'day' ? val : internalDay;
+        const nextMonth = field === 'month' ? val : internalMonth;
+        const nextYear = field === 'year' ? val : internalYear;
+
+        if (field === 'day') setInternalDay(val);
+        if (field === 'month') setInternalMonth(val);
+        if (field === 'year') setInternalYear(val);
+
+        if (nextYear && nextMonth && nextDay) {
+            const dd = nextDay.padStart(2, '0');
+            const mm = nextMonth.padStart(2, '0');
+            onChange(`${nextYear}-${mm}-${dd}`);
+        } else if (!nextYear && !nextMonth && !nextDay) {
             onChange('');
-        } else {
-            // Partial — store what we have
-            const dd = (next.day || '').padStart(2, '0');
-            const mm = (next.month || '').padStart(2, '0');
-            const yy = next.year || '';
-            if (yy && mm !== '00' && dd !== '00') {
-                onChange(`${yy}-${mm}-${dd}`);
-            }
         }
     };
 
@@ -87,7 +99,7 @@ export function DatePicker({
         <div className={className}>
             <div className="flex gap-2">
                 <select
-                    value={parsed.day}
+                    value={internalDay}
                     onChange={e => handleChange('day', e.target.value)}
                     className={`${selectClass} w-[90px]`}
                     aria-label="Day"
@@ -99,7 +111,7 @@ export function DatePicker({
                 </select>
 
                 <select
-                    value={parsed.month}
+                    value={internalMonth}
                     onChange={e => handleChange('month', e.target.value)}
                     className={`${selectClass} flex-1`}
                     aria-label="Month"
@@ -111,7 +123,7 @@ export function DatePicker({
                 </select>
 
                 <select
-                    value={parsed.year}
+                    value={internalYear}
                     onChange={e => handleChange('year', e.target.value)}
                     className={`${selectClass} w-[100px]`}
                     aria-label="Year"
