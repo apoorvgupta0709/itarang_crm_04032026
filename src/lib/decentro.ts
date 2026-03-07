@@ -160,6 +160,54 @@ export async function faceMatch(image1: Blob, image2: Blob) {
     return res.json();
 }
 
+// ─── Document Classification ──────────────────────────────────────────────────
+
+export type ClassificationDocType = 'PAN' | 'AADHAAR' | 'AADHAAR_BACK' | 'DRIVING_LICENSE' | 'VOTERID' | 'PASSPORT' | 'CHEQUE' | 'BANK_STATEMENT' | 'RC' | 'UNKNOWN';
+
+const DOC_TYPE_TO_CLASSIFICATION: Record<string, ClassificationDocType> = {
+    'aadhaar_front': 'AADHAAR',
+    'aadhaar_back': 'AADHAAR_BACK',
+    'pan_card': 'PAN',
+    'passport_photo': 'PASSPORT',
+    'address_proof': 'AADHAAR',
+    'rc_copy': 'RC',
+    'bank_statement': 'BANK_STATEMENT',
+    'cheque_1': 'CHEQUE',
+    'cheque_2': 'CHEQUE',
+    'cheque_3': 'CHEQUE',
+    'cheque_4': 'CHEQUE',
+};
+
+export function getExpectedDocClass(docType: string): ClassificationDocType {
+    return DOC_TYPE_TO_CLASSIFICATION[docType] || 'UNKNOWN';
+}
+
+export async function classifyDocument(documentBlob: Blob, filename: string) {
+    const form = new FormData();
+    form.append('reference_id', genRefId());
+    form.append('consent', 'Y');
+    form.append('consent_purpose', 'Document classification for KYC verification');
+    form.append('document', documentBlob, filename);
+
+    const headers: Record<string, string> = {
+        'client_id': CLIENT_ID,
+        'client_secret': CLIENT_SECRET,
+    };
+    if (isRealSecret(MODULE_SECRET_KYC)) headers['module_secret'] = MODULE_SECRET_KYC!;
+
+    try {
+        const res = await fetch(`${BASE_URL}/kyc/document/classify`, {
+            method: 'POST',
+            headers,
+            body: form,
+        });
+        return res.json();
+    } catch {
+        // Classification API may not be available - return null to allow fallback
+        return null;
+    }
+}
+
 // ─── Document OCR ─────────────────────────────────────────────────────────────
 
 export type OcrDocType = 'PAN' | 'AADHAAR' | 'DRIVING_LICENSE' | 'VOTERID';
@@ -184,4 +232,133 @@ export async function extractDocumentOcr(document_type: OcrDocType, documentBlob
         body: form,
     });
     return res.json();
+}
+
+// ─── OCR Data Comparison Helpers ──────────────────────────────────────────────
+
+export interface OcrComparisonField {
+    field: string;
+    label: string;
+    ocrValue: string | null;
+    leadValue: string | null;
+    match: boolean;
+    similarity?: number;
+}
+
+function normalizeString(s: string | null | undefined): string {
+    return (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function stringSimilarity(a: string, b: string): number {
+    const na = normalizeString(a);
+    const nb = normalizeString(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 100;
+
+    // Simple Levenshtein-based similarity
+    const longer = na.length > nb.length ? na : nb;
+    const shorter = na.length > nb.length ? nb : na;
+    if (longer.length === 0) return 100;
+
+    const costs: number[] = [];
+    for (let i = 0; i <= shorter.length; i++) {
+        let lastValue = i;
+        for (let j = 0; j <= longer.length; j++) {
+            if (i === 0) { costs[j] = j; }
+            else if (j > 0) {
+                let newValue = costs[j - 1];
+                if (shorter.charAt(i - 1) !== longer.charAt(j - 1)) {
+                    newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+                }
+                costs[j - 1] = lastValue;
+                lastValue = newValue;
+            }
+        }
+        if (i > 0) costs[longer.length] = lastValue;
+    }
+    return Math.round(((longer.length - costs[longer.length]) / longer.length) * 100);
+}
+
+export function compareOcrWithLead(
+    ocrData: Record<string, any>,
+    leadData: { full_name?: string; father_or_husband_name?: string; dob?: string; phone?: string; current_address?: string },
+    _docType: string
+): OcrComparisonField[] {
+    const comparisons: OcrComparisonField[] = [];
+
+    // Extract name from OCR based on doc type
+    const ocrName = ocrData?.name || ocrData?.full_name || ocrData?.nameOnCard || null;
+    if (ocrName || leadData.full_name) {
+        const sim = stringSimilarity(ocrName, leadData.full_name || '');
+        comparisons.push({
+            field: 'name',
+            label: 'Full Name',
+            ocrValue: ocrName,
+            leadValue: leadData.full_name || null,
+            match: sim >= 80,
+            similarity: sim,
+        });
+    }
+
+    // Father/Husband Name
+    const ocrFather = ocrData?.fatherName || ocrData?.father_name || ocrData?.fatherOrHusbandName || null;
+    if (ocrFather || leadData.father_or_husband_name) {
+        const sim = stringSimilarity(ocrFather, leadData.father_or_husband_name || '');
+        comparisons.push({
+            field: 'father_name',
+            label: 'Father/Husband Name',
+            ocrValue: ocrFather,
+            leadValue: leadData.father_or_husband_name || null,
+            match: sim >= 80,
+            similarity: sim,
+        });
+    }
+
+    // Date of Birth
+    const ocrDob = ocrData?.dob || ocrData?.dateOfBirth || ocrData?.date_of_birth || null;
+    if (ocrDob || leadData.dob) {
+        const leadDobStr = leadData.dob ? new Date(leadData.dob).toISOString().slice(0, 10) : '';
+        const ocrDobNorm = ocrDob ? normalizeDate(ocrDob) : '';
+        comparisons.push({
+            field: 'dob',
+            label: 'Date of Birth',
+            ocrValue: ocrDob,
+            leadValue: leadDobStr || null,
+            match: ocrDobNorm === leadDobStr,
+            similarity: ocrDobNorm === leadDobStr ? 100 : 0,
+        });
+    }
+
+    // Address (for Aadhaar)
+    const ocrAddress = ocrData?.address || ocrData?.currentAddress || null;
+    if (ocrAddress || leadData.current_address) {
+        const sim = stringSimilarity(ocrAddress, leadData.current_address || '');
+        comparisons.push({
+            field: 'address',
+            label: 'Address',
+            ocrValue: ocrAddress,
+            leadValue: leadData.current_address || null,
+            match: sim >= 70,
+            similarity: sim,
+        });
+    }
+
+    return comparisons;
+}
+
+function normalizeDate(dateStr: string): string {
+    // Try various date formats and convert to YYYY-MM-DD
+    const cleaned = dateStr.replace(/[/\\]/g, '-');
+    // DD-MM-YYYY
+    const ddmmyyyy = cleaned.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    if (ddmmyyyy) return `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`;
+    // YYYY-MM-DD
+    const yyyymmdd = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (yyyymmdd) return cleaned;
+    // Try Date parsing
+    try {
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    } catch { /* ignore */ }
+    return dateStr;
 }

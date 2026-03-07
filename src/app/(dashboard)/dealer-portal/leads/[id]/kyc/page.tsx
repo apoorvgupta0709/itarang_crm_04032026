@@ -41,11 +41,24 @@ const VERIFICATION_TYPES = [
 
 type VerificationStatus = 'pending' | 'initiating' | 'awaiting_action' | 'in_progress' | 'success' | 'failed';
 
+interface OcrComparisonField {
+    field: string;
+    label: string;
+    ocrValue: string | null;
+    leadValue: string | null;
+    match: boolean;
+    similarity?: number;
+}
+
 interface DocUpload {
     key: string;
     file_url: string | null;
     verification_status: VerificationStatus;
     failed_reason?: string;
+    ocr_data?: Record<string, any> | null;
+    ocr_comparison?: OcrComparisonField[] | null;
+    ocr_failed?: boolean;
+    enable_manual_entry?: boolean;
 }
 
 interface VerificationRow {
@@ -111,6 +124,16 @@ export default function KYCPage() {
     const [faceImg2, setFaceImg2] = useState<File | null>(null);
     const [faceMatching, setFaceMatching] = useState(false);
     const [faceResult, setFaceResult] = useState<{ success: boolean; message: string; match_score?: number; is_match?: boolean } | null>(null);
+
+    // Manual entry state (fallback when OCR fails)
+    const [manualEntryDoc, setManualEntryDoc] = useState<string | null>(null);
+    const [manualFields, setManualFields] = useState<Record<string, string>>({
+        name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '',
+    });
+    const [savingManual, setSavingManual] = useState(false);
+
+    // OCR comparison results per doc
+    const [ocrComparisons, setOcrComparisons] = useState<Record<string, OcrComparisonField[]>>({});
 
     // Auto-save timer
     const [lastSaved, setLastSaved] = useState<string | null>(null);
@@ -200,7 +223,7 @@ export default function KYCPage() {
         return { total: required.length, uploaded: uploaded.length, pending };
     };
 
-    // Document Upload Handler
+    // Document Upload Handler (with auto-OCR + classification + comparison)
     const handleDocUpload = async (docType: string, file: File) => {
         // Validate file
         if (file.size > 5 * 1024 * 1024) {
@@ -221,15 +244,148 @@ export default function KYCPage() {
             const res = await fetch(`/api/kyc/${leadId}/upload-document`, { method: 'POST', body: formData });
             const data = await res.json();
             if (data.success) {
-                setUploadedDocs(prev => ({
-                    ...prev,
-                    [docType]: { key: docType, file_url: data.file_url, verification_status: 'pending' }
-                }));
+                const docUpload: DocUpload = {
+                    key: docType,
+                    file_url: data.file_url,
+                    verification_status: data.ocr_failed ? 'failed' : (data.ocr_data ? 'in_progress' : 'pending'),
+                    failed_reason: data.ocr_error || data.warning || undefined,
+                    ocr_data: data.ocr_data || null,
+                    ocr_comparison: data.ocr_comparison || null,
+                    ocr_failed: data.ocr_failed || false,
+                    enable_manual_entry: data.enable_manual_entry || false,
+                };
+
+                setUploadedDocs(prev => ({ ...prev, [docType]: docUpload }));
+
+                // Store OCR comparison results
+                if (data.ocr_comparison && data.ocr_comparison.length > 0) {
+                    setOcrComparisons(prev => ({ ...prev, [docType]: data.ocr_comparison }));
+                }
+
+                // Show classification mismatch warning
+                if (data.warning) {
+                    setApiError(data.warning);
+                }
+
+                // If OCR failed, enable manual entry for this doc
+                if (data.ocr_failed || data.enable_manual_entry) {
+                    setManualEntryDoc(docType);
+                }
+
+                // Auto-trigger face match when both passport_photo and aadhaar_front are uploaded
+                if (docType === 'passport_photo' || docType === 'aadhaar_front') {
+                    const otherDoc = docType === 'passport_photo' ? 'aadhaar_front' : 'passport_photo';
+                    const otherUpload = docType === 'passport_photo' ? uploadedDocs['aadhaar_front'] : uploadedDocs['passport_photo'];
+                    if (otherUpload?.file_url) {
+                        triggerAutoFaceMatch(
+                            docType === 'passport_photo' ? data.file_url : otherUpload.file_url,
+                            docType === 'aadhaar_front' ? data.file_url : otherUpload.file_url
+                        );
+                    }
+                }
+
+                // Auto-trigger address validation when aadhaar_back is uploaded
+                if (docType === 'aadhaar_back' && data.ocr_data?.address) {
+                    triggerAutoAddressMatch(data.ocr_data.address);
+                }
             } else {
                 setApiError(data.error?.message || 'Upload failed');
             }
         } catch {
             setApiError('Upload failed. Please try again.');
+        }
+    };
+
+    // Auto face match between passport photo and aadhaar
+    const triggerAutoFaceMatch = async (passportUrl: string, aadhaarUrl: string) => {
+        try {
+            // Fetch both images as blobs
+            const [img1Res, img2Res] = await Promise.all([
+                fetch(passportUrl),
+                fetch(aadhaarUrl),
+            ]);
+            const [img1Blob, img2Blob] = await Promise.all([img1Res.blob(), img2Res.blob()]);
+            const img1File = new File([img1Blob], 'passport.jpg', { type: 'image/jpeg' });
+            const img2File = new File([img2Blob], 'aadhaar.jpg', { type: 'image/jpeg' });
+
+            setFaceImg1(img1File);
+            setFaceImg2(img2File);
+
+            const form = new FormData();
+            form.append('image1', img1File);
+            form.append('image2', img2File);
+            setFaceMatching(true);
+            const res = await fetch(`/api/kyc/${leadId}/decentro/face-match`, { method: 'POST', body: form });
+            const data = await res.json();
+            setFaceResult({ success: data.success, message: data.message, match_score: data.match_score, is_match: data.is_match });
+        } catch {
+            // Auto face match failed silently - user can still do manual
+        } finally {
+            setFaceMatching(false);
+        }
+    };
+
+    // Auto address match: compare aadhaar address with lead address
+    const triggerAutoAddressMatch = async (aadhaarAddress: string) => {
+        if (!lead?.current_address) return;
+        // Simple fuzzy match (same logic as server-side)
+        const a = aadhaarAddress.trim().toLowerCase().replace(/\s+/g, ' ');
+        const b = (lead.current_address || '').trim().toLowerCase().replace(/\s+/g, ' ');
+        const similarity = a === b ? 100 : Math.round((1 - Math.abs(a.length - b.length) / Math.max(a.length, b.length)) * 100);
+
+        if (similarity < 70) {
+            setOcrComparisons(prev => ({
+                ...prev,
+                'address_match': [{
+                    field: 'address',
+                    label: 'Address (Aadhaar vs Lead)',
+                    ocrValue: aadhaarAddress,
+                    leadValue: lead.current_address,
+                    match: false,
+                    similarity,
+                }],
+            }));
+        }
+    };
+
+    // Save manual entry data
+    const handleSaveManualEntry = async () => {
+        if (!manualEntryDoc) return;
+        setSavingManual(true);
+        try {
+            // Save manual OCR data to the document
+            const res = await fetch(`/api/kyc/${leadId}/save-draft`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    step: 2,
+                    data: {
+                        manualOcrData: { [manualEntryDoc]: manualFields },
+                        paymentMethod,
+                        documents: uploadedDocs,
+                        consentStatus,
+                    },
+                }),
+            });
+            if (res.ok) {
+                // Mark document as manually entered
+                setUploadedDocs(prev => ({
+                    ...prev,
+                    [manualEntryDoc!]: {
+                        ...prev[manualEntryDoc!],
+                        verification_status: 'in_progress',
+                        ocr_failed: false,
+                        enable_manual_entry: false,
+                        ocr_data: manualFields,
+                    },
+                }));
+                setManualEntryDoc(null);
+                setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' });
+            }
+        } catch {
+            setApiError('Failed to save manual entry');
+        } finally {
+            setSavingManual(false);
         }
     };
 
@@ -675,12 +831,162 @@ export default function KYCPage() {
                                         uploaded={!!uploaded?.file_url}
                                         verificationStatus={uploaded?.verification_status}
                                         failedReason={uploaded?.failed_reason}
+                                        ocrFailed={uploaded?.ocr_failed}
                                         onUpload={(file) => handleDocUpload(doc.key, file)}
+                                        onManualEntry={() => setManualEntryDoc(doc.key)}
                                     />
                                 );
                             })}
                         </div>
                     </SectionCard>
+
+                    {/* OCR COMPARISON RESULTS */}
+                    {Object.keys(ocrComparisons).length > 0 && (
+                        <SectionCard title="Document Verification Results">
+                            <p className="text-xs text-gray-400 mb-4">Extracted data from uploaded documents compared with lead details. Mismatches are highlighted.</p>
+                            <div className="space-y-4">
+                                {Object.entries(ocrComparisons).map(([docKey, comparisons]) => (
+                                    <div key={docKey} className="p-4 bg-gray-50 rounded-xl">
+                                        <h4 className="text-sm font-bold text-gray-900 mb-3 capitalize">
+                                            {docKey.replace(/_/g, ' ')} - OCR Results
+                                        </h4>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-sm">
+                                                <thead>
+                                                    <tr className="border-b border-gray-200">
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Field</th>
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">From Document (OCR)</th>
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">From Lead</th>
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Match</th>
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Similarity</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {comparisons.map(c => (
+                                                        <tr key={c.field} className={`border-b border-gray-100 ${!c.match ? 'bg-red-50' : 'bg-green-50'}`}>
+                                                            <td className="py-2 px-3 font-medium text-gray-900">{c.label}</td>
+                                                            <td className="py-2 px-3 text-gray-700 font-mono text-xs">{c.ocrValue || <span className="text-gray-300 italic">Not found</span>}</td>
+                                                            <td className="py-2 px-3 text-gray-700 font-mono text-xs">{c.leadValue || <span className="text-gray-300 italic">Not filled</span>}</td>
+                                                            <td className="py-2 px-3">
+                                                                {c.match
+                                                                    ? <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700">Match</span>
+                                                                    : <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">Mismatch</span>
+                                                                }
+                                                            </td>
+                                                            <td className="py-2 px-3 text-xs font-bold">
+                                                                {c.similarity != null ? (
+                                                                    <span className={c.similarity >= 80 ? 'text-green-600' : c.similarity >= 50 ? 'text-amber-600' : 'text-red-600'}>
+                                                                        {c.similarity}%
+                                                                    </span>
+                                                                ) : '-'}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </SectionCard>
+                    )}
+
+                    {/* MANUAL ENTRY FALLBACK (when OCR fails) */}
+                    {manualEntryDoc && (
+                        <SectionCard title="Manual Data Entry">
+                            <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl mb-4">
+                                <div className="flex items-center gap-2 text-amber-700 text-sm font-medium mb-1">
+                                    <AlertCircle className="w-4 h-4" />
+                                    OCR could not extract data from <strong className="capitalize">{manualEntryDoc.replace(/_/g, ' ')}</strong>
+                                </div>
+                                <p className="text-xs text-amber-600">Please enter the details manually from the document.</p>
+                            </div>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {(manualEntryDoc.includes('aadhaar') || manualEntryDoc.includes('pan')) && (
+                                    <>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-gray-700">Full Name (as on document)</label>
+                                            <input
+                                                value={manualFields.name}
+                                                onChange={e => setManualFields(prev => ({ ...prev, name: e.target.value }))}
+                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
+                                                placeholder="Full name as printed"
+                                            />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-gray-700">Father/Husband Name</label>
+                                            <input
+                                                value={manualFields.father_name}
+                                                onChange={e => setManualFields(prev => ({ ...prev, father_name: e.target.value }))}
+                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
+                                                placeholder="Father or husband name"
+                                            />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-gray-700">Date of Birth</label>
+                                            <input
+                                                type="date"
+                                                value={manualFields.dob}
+                                                onChange={e => setManualFields(prev => ({ ...prev, dob: e.target.value }))}
+                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
+                                            />
+                                        </div>
+                                    </>
+                                )}
+                                {manualEntryDoc.includes('aadhaar') && (
+                                    <>
+                                        <div className="space-y-1">
+                                            <label className="text-xs font-bold text-gray-700">Aadhaar Number</label>
+                                            <input
+                                                value={manualFields.aadhaar_number}
+                                                onChange={e => setManualFields(prev => ({ ...prev, aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
+                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
+                                                placeholder="12-digit Aadhaar number"
+                                                maxLength={12}
+                                            />
+                                        </div>
+                                        <div className="space-y-1 md:col-span-2">
+                                            <label className="text-xs font-bold text-gray-700">Address</label>
+                                            <textarea
+                                                value={manualFields.address}
+                                                onChange={e => setManualFields(prev => ({ ...prev, address: e.target.value }))}
+                                                className="w-full h-20 px-3 py-2 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] resize-none"
+                                                placeholder="Full address as on Aadhaar"
+                                            />
+                                        </div>
+                                    </>
+                                )}
+                                {manualEntryDoc.includes('pan') && (
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-bold text-gray-700">PAN Number</label>
+                                        <input
+                                            value={manualFields.pan_number}
+                                            onChange={e => setManualFields(prev => ({ ...prev, pan_number: e.target.value.toUpperCase().slice(0, 10) }))}
+                                            className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]"
+                                            placeholder="ABCDE1234F"
+                                            maxLength={10}
+                                        />
+                                    </div>
+                                )}
+                            </div>
+                            <div className="flex justify-end gap-3 mt-4">
+                                <button
+                                    onClick={() => { setManualEntryDoc(null); setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' }); }}
+                                    className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSaveManualEntry}
+                                    disabled={savingManual || !manualFields.name}
+                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2"
+                                >
+                                    {savingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                                    Save Manual Entry
+                                </button>
+                            </div>
+                        </SectionCard>
+                    )}
 
                     {/* CUSTOMER CONSENT */}
                     <SectionCard title="Customer Consent">
@@ -1086,16 +1392,18 @@ function SectionCard({ title, children }: { title: string; children: React.React
     );
 }
 
-function DocumentCard({ label, required, uploaded, verificationStatus, failedReason, onUpload }: {
+function DocumentCard({ label, required, uploaded, verificationStatus, failedReason, ocrFailed, onUpload, onManualEntry }: {
     label: string;
     required: boolean;
     uploaded: boolean;
     verificationStatus?: VerificationStatus;
     failedReason?: string;
+    ocrFailed?: boolean;
     onUpload: (file: File) => void;
+    onManualEntry?: () => void;
 }) {
     return (
-        <label className={`relative flex flex-col items-center justify-center p-6 border-2 rounded-2xl cursor-pointer transition-all min-h-[140px] ${uploaded
+        <div className={`relative flex flex-col items-center justify-center p-6 border-2 rounded-2xl transition-all min-h-[140px] ${uploaded
             ? verificationStatus === 'failed'
                 ? 'border-red-200 bg-red-50'
                 : verificationStatus === 'success'
@@ -1103,24 +1411,36 @@ function DocumentCard({ label, required, uploaded, verificationStatus, failedRea
                     : 'border-blue-200 bg-blue-50'
             : 'border-dashed border-gray-200 hover:border-[#0047AB] hover:bg-gray-50'
             }`}>
-            <input type="file" className="hidden" accept="image/png,image/jpeg,application/pdf" onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
+            <label className="flex flex-col items-center cursor-pointer w-full">
+                <input type="file" className="hidden" accept="image/png,image/jpeg,application/pdf" onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
 
-            {uploaded ? (
-                <>
-                    {verificationStatus === 'success' && <CheckCircle2 className="w-8 h-8 text-green-500 mb-2" />}
-                    {verificationStatus === 'failed' && <XCircle className="w-8 h-8 text-red-500 mb-2" />}
-                    {verificationStatus === 'pending' && <Clock className="w-8 h-8 text-blue-500 mb-2" />}
-                    {verificationStatus === 'in_progress' && <Loader2 className="w-8 h-8 text-amber-500 mb-2 animate-spin" />}
-                </>
-            ) : (
-                <Upload className="w-8 h-8 text-gray-300 mb-2" />
-            )}
+                {uploaded ? (
+                    <>
+                        {verificationStatus === 'success' && <CheckCircle2 className="w-8 h-8 text-green-500 mb-2" />}
+                        {verificationStatus === 'failed' && <XCircle className="w-8 h-8 text-red-500 mb-2" />}
+                        {verificationStatus === 'pending' && <Clock className="w-8 h-8 text-blue-500 mb-2" />}
+                        {verificationStatus === 'in_progress' && <Loader2 className="w-8 h-8 text-amber-500 mb-2 animate-spin" />}
+                    </>
+                ) : (
+                    <Upload className="w-8 h-8 text-gray-300 mb-2" />
+                )}
 
-            <span className="text-xs font-bold text-gray-700 text-center">{label}</span>
-            {required && !uploaded && <span className="text-[10px] text-red-400 font-medium mt-1">Required</span>}
-            {uploaded && <span className="text-[10px] text-green-600 font-medium mt-1">Uploaded</span>}
+                <span className="text-xs font-bold text-gray-700 text-center">{label}</span>
+                {required && !uploaded && <span className="text-[10px] text-red-400 font-medium mt-1">Required</span>}
+                {uploaded && !ocrFailed && <span className="text-[10px] text-green-600 font-medium mt-1">Uploaded</span>}
+            </label>
+
             {failedReason && <span className="text-[10px] text-red-500 font-medium mt-1 text-center">{failedReason}</span>}
-        </label>
+
+            {ocrFailed && uploaded && onManualEntry && (
+                <button
+                    onClick={(e) => { e.stopPropagation(); onManualEntry(); }}
+                    className="mt-2 px-3 py-1 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-bold hover:bg-amber-200 transition-colors"
+                >
+                    Enter Manually
+                </button>
+            )}
+        </div>
     );
 }
 
