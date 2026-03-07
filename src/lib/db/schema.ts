@@ -872,6 +872,10 @@ export const couponCodes = pgTable('coupon_codes', {
     dealer_id: varchar('dealer_id', { length: 255 }).references(() => accounts.id).notNull(),
     status: varchar('status', { length: 20 }).default('available').notNull(), // available, validated, used, expired
     credits_available: integer('credits_available').default(1),
+    discount_type: varchar('discount_type', { length: 20 }).default('flat'), // flat, percentage
+    discount_value: decimal('discount_value', { precision: 10, scale: 2 }).default('0'),
+    max_discount_cap: decimal('max_discount_cap', { precision: 10, scale: 2 }),
+    min_amount: decimal('min_amount', { precision: 10, scale: 2 }),
     used_by_lead_id: varchar('used_by_lead_id', { length: 255 }).references(() => leads.id),
     used_by: uuid('used_by').references(() => users.id),
     validated_at: timestamp('validated_at', { withTimezone: true }),
@@ -879,6 +883,54 @@ export const couponCodes = pgTable('coupon_codes', {
     expires_at: timestamp('expires_at', { withTimezone: true }),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// --- FACILITATION PAYMENTS ---
+
+export const facilitationPayments = pgTable('facilitation_payments', {
+    id: varchar('id', { length: 255 }).primaryKey(),
+    lead_id: varchar('lead_id', { length: 255 }).references(() => leads.id, { onDelete: 'cascade' }).notNull(),
+    payment_method: varchar('payment_method', { length: 30 }),
+
+    facilitation_fee_base_amount: decimal('facilitation_fee_base_amount', { precision: 10, scale: 2 }).notNull().default('1500.00'),
+    coupon_code: varchar('coupon_code', { length: 50 }),
+    coupon_id: varchar('coupon_id', { length: 255 }),
+    coupon_discount_type: varchar('coupon_discount_type', { length: 20 }),
+    coupon_discount_value: decimal('coupon_discount_value', { precision: 10, scale: 2 }),
+    coupon_discount_amount: decimal('coupon_discount_amount', { precision: 10, scale: 2 }).default('0'),
+    facilitation_fee_final_amount: decimal('facilitation_fee_final_amount', { precision: 10, scale: 2 }).notNull(),
+
+    razorpay_qr_id: varchar('razorpay_qr_id', { length: 255 }),
+    razorpay_qr_status: varchar('razorpay_qr_status', { length: 30 }),
+    razorpay_qr_image_url: text('razorpay_qr_image_url'),
+    razorpay_qr_short_url: text('razorpay_qr_short_url'),
+    razorpay_qr_expires_at: timestamp('razorpay_qr_expires_at', { withTimezone: true }),
+
+    razorpay_payment_id: varchar('razorpay_payment_id', { length: 255 }),
+    razorpay_order_id: varchar('razorpay_order_id', { length: 255 }),
+    razorpay_payment_status: varchar('razorpay_payment_status', { length: 30 }),
+    utr_number_manual: varchar('utr_number_manual', { length: 100 }),
+    payment_screenshot_url: text('payment_screenshot_url'),
+
+    facilitation_fee_status: varchar('facilitation_fee_status', { length: 30 }).notNull().default('UNPAID'),
+    // UNPAID, QR_GENERATED, PAYMENT_PENDING_CONFIRMATION, PAID, FAILED, EXPIRED
+
+    payment_paid_at: timestamp('payment_paid_at', { withTimezone: true }),
+    payment_verified_at: timestamp('payment_verified_at', { withTimezone: true }),
+    payment_verification_source: varchar('payment_verification_source', { length: 30 }),
+
+    created_by: uuid('created_by').references(() => users.id),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    fpLeadIdx: index('facilitation_payments_lead_id_idx').on(table.lead_id),
+    fpStatusIdx: index('facilitation_payments_status_idx').on(table.facilitation_fee_status),
+    fpQrIdx: index('facilitation_payments_rzp_qr_idx').on(table.razorpay_qr_id),
+}));
+
+export const facilitationPaymentsRelations = relations(facilitationPayments, ({ one }) => ({
+    lead: one(leads, { fields: [facilitationPayments.lead_id], references: [leads.id] }),
+    creator: one(users, { fields: [facilitationPayments.created_by], references: [users.id] }),
+}));
 
 // --- CO-BORROWER MODULE ---
 

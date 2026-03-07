@@ -1,22 +1,24 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
     ChevronLeft, Loader2, Upload, CheckCircle2, XCircle,
     AlertCircle, Clock, Info, X, FileText, Camera, Shield,
-    Send, Download, CreditCard, RefreshCw, Eye, ChevronRight
+    Send, Download, CreditCard, RefreshCw, Eye, ChevronRight,
+    QrCode, Tag, Timer, ArrowRight
 } from 'lucide-react';
 import { useAuth } from '@/components/auth/AuthProvider';
 
-// Document type definitions per BRD
+// ── Constants ────────────────────────────────────────────────────────────────
+
 const FINANCE_DOCUMENTS = [
     { key: 'aadhaar_front', label: 'Aadhaar Front', required: true },
     { key: 'aadhaar_back', label: 'Aadhaar Back', required: true },
     { key: 'pan_card', label: 'PAN Card', required: true },
     { key: 'passport_photo', label: 'Passport Size Photo', required: true },
     { key: 'address_proof', label: 'Address Proof', required: true },
-    { key: 'rc_copy', label: 'RC Copy', required: false, conditional: true }, // Only if 2W/3W/4W
+    { key: 'rc_copy', label: 'RC Copy', required: false, conditional: true },
     { key: 'bank_statement', label: 'Bank Statement', required: true },
     { key: 'cheque_1', label: 'Undated Cheque 1', required: true },
     { key: 'cheque_2', label: 'Undated Cheque 2', required: true },
@@ -30,16 +32,8 @@ const UPFRONT_DOCUMENTS = [
     { key: 'pan_card', label: 'PAN Card', required: true },
 ];
 
-const VERIFICATION_TYPES = [
-    { key: 'aadhaar', label: 'Aadhaar Verification' },
-    { key: 'pan', label: 'PAN Verification' },
-    { key: 'bank', label: 'Bank Verification' },
-    { key: 'address', label: 'Address Proof' },
-    { key: 'rc', label: 'RC Verification' },
-    { key: 'mobile', label: 'Mobile Number' },
-];
-
 type VerificationStatus = 'pending' | 'initiating' | 'awaiting_action' | 'in_progress' | 'success' | 'failed';
+type PaymentStatus = 'UNPAID' | 'QR_GENERATED' | 'PAYMENT_PENDING_CONFIRMATION' | 'PAID' | 'FAILED' | 'EXPIRED';
 
 interface OcrComparisonField {
     field: string;
@@ -69,92 +63,113 @@ interface VerificationRow {
     failed_reason: string | null;
 }
 
+interface PaymentData {
+    payment_id: string;
+    qr_id: string;
+    qr_image_url: string;
+    qr_short_url: string;
+    qr_status: string;
+    expires_at: string;
+    base_amount: number;
+    discount_amount: number;
+    final_amount: number;
+    coupon_code: string | null;
+    facilitation_fee_status: PaymentStatus;
+    razorpay_payment_id?: string;
+}
+
+// ── Main Page ────────────────────────────────────────────────────────────────
+
 export default function KYCPage() {
     const router = useRouter();
     const params = useParams();
     const leadId = params.id as string;
     const { user } = useAuth();
 
-    // Core State
+    // Core
     const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState(false);
     const [lead, setLead] = useState<any>(null);
     const [accessDenied, setAccessDenied] = useState(false);
     const [apiError, setApiError] = useState<string | null>(null);
 
-    // KYC Form State
-    const [paymentMethod, setPaymentMethod] = useState<'finance' | 'upfront'>('finance');
-    const [uploadedDocs, setUploadedDocs] = useState<Record<string, DocUpload>>({});
-    const [verifications, setVerifications] = useState<VerificationRow[]>([]);
-    const [consentStatus, setConsentStatus] = useState<string>('awaiting_signature');
+    // Payment method (determined from lead)
+    const [paymentMethod, setPaymentMethod] = useState<string>('finance');
+    const isFinance = ['finance', 'other_finance', 'dealer_finance'].includes(paymentMethod);
 
-    // Coupon State
+    // ── Payment State ──
+    const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('UNPAID');
+    const [paymentData, setPaymentData] = useState<PaymentData | null>(null);
     const [couponCode, setCouponCode] = useState('');
-    const [couponValid, setCouponValid] = useState<boolean | null>(null);
+    const [couponResult, setCouponResult] = useState<any>(null);
     const [couponLoading, setCouponLoading] = useState(false);
+    const [generatingQr, setGeneratingQr] = useState(false);
+    const [regeneratingQr, setRegeneratingQr] = useState(false);
+    const [paymentPolling, setPaymentPolling] = useState(false);
+    const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-    // Submission State
-    const [verificationSubmitted, setVerificationSubmitted] = useState(false);
-    const [submitting, setSubmitting] = useState(false);
+    // ── Document Upload State ──
+    const [uploadedDocs, setUploadedDocs] = useState<Record<string, DocUpload>>({});
+    const [ocrComparisons, setOcrComparisons] = useState<Record<string, OcrComparisonField[]>>({});
 
-        // Decentro inline verification state
-    const [panNumber, setPanNumber] = useState('');
-    const [panVerifying, setPanVerifying] = useState(false);
-    const [panResult, setPanResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
-
-    const [aadhaarNumber, setAadhaarNumber] = useState('');
-    const [aadhaarTxnId, setAadhaarTxnId] = useState('');
-    const [aadhaarOtp, setAadhaarOtp] = useState('');
-    const [aadhaarStep, setAadhaarStep] = useState<'input' | 'otp'>('input');
-    const [aadhaarVerifying, setAadhaarVerifying] = useState(false);
-    const [aadhaarResult, setAadhaarResult] = useState<{ success: boolean; message: string } | null>(null);
-
-    const [bankAccountNo, setBankAccountNo] = useState('');
-    const [bankIfsc, setBankIfsc] = useState('');
-    const [bankName, setBankName] = useState('');
-    const [bankVerifying, setBankVerifying] = useState(false);
-    const [bankResult, setBankResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
-
-    const [ocrFile, setOcrFile] = useState<File | null>(null);
-    const [ocrDocType, setOcrDocType] = useState<'PAN' | 'AADHAAR' | 'DRIVING_LICENSE' | 'VOTERID'>('PAN');
-    const [ocrExtracting, setOcrExtracting] = useState(false);
-    const [ocrResult, setOcrResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
-
-    const [faceImg1, setFaceImg1] = useState<File | null>(null);
-    const [faceImg2, setFaceImg2] = useState<File | null>(null);
-    const [faceMatching, setFaceMatching] = useState(false);
-    const [faceResult, setFaceResult] = useState<{ success: boolean; message: string; match_score?: number; is_match?: boolean } | null>(null);
-
-    // Manual entry state (fallback when OCR fails)
+    // ── Manual Entry State ──
     const [manualEntryDoc, setManualEntryDoc] = useState<string | null>(null);
     const [manualFields, setManualFields] = useState<Record<string, string>>({
         name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '',
     });
     const [savingManual, setSavingManual] = useState(false);
 
-    // OCR comparison results per doc
-    const [ocrComparisons, setOcrComparisons] = useState<Record<string, OcrComparisonField[]>>({});
+    // ── Verification State ──
+    const [verifications, setVerifications] = useState<VerificationRow[]>([]);
+    const [consentStatus, setConsentStatus] = useState<string>('awaiting_signature');
+    const [verificationSubmitted, setVerificationSubmitted] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
 
-    // Auto-save timer
+    // ── Decentro Inline Verification ──
+    const [panNumber, setPanNumber] = useState('');
+    const [panVerifying, setPanVerifying] = useState(false);
+    const [panResult, setPanResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
+    const [aadhaarNumber, setAadhaarNumber] = useState('');
+    const [aadhaarTxnId, setAadhaarTxnId] = useState('');
+    const [aadhaarOtp, setAadhaarOtp] = useState('');
+    const [aadhaarStep, setAadhaarStep] = useState<'input' | 'otp'>('input');
+    const [aadhaarVerifying, setAadhaarVerifying] = useState(false);
+    const [aadhaarResult, setAadhaarResult] = useState<{ success: boolean; message: string } | null>(null);
+    const [bankAccountNo, setBankAccountNo] = useState('');
+    const [bankIfsc, setBankIfsc] = useState('');
+    const [bankName, setBankName] = useState('');
+    const [bankVerifying, setBankVerifying] = useState(false);
+    const [bankResult, setBankResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
+    const [faceMatching, setFaceMatching] = useState(false);
+    const [faceResult, setFaceResult] = useState<{ success: boolean; message: string; match_score?: number; is_match?: boolean } | null>(null);
+
+    // ── Draft & Save ──
+    const [saving, setSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState<string | null>(null);
 
-    // Access check & load data
+    // ── Load Data ────────────────────────────────────────────────────────────
+
     useEffect(() => {
-        const checkAccess = async () => {
+        const loadData = async () => {
             try {
                 const res = await fetch(`/api/kyc/${leadId}/access-check`);
                 const data = await res.json();
-                if (!data.success || !data.allowed) {
-                    setAccessDenied(true);
-                    return;
-                }
+                if (!data.success || !data.allowed) { setAccessDenied(true); return; }
+
                 setLead(data.lead);
                 if (data.lead.payment_method) setPaymentMethod(data.lead.payment_method);
                 if (data.lead.consent_status) setConsentStatus(data.lead.consent_status);
 
-                // Load existing documents
-                const docsRes = await fetch(`/api/kyc/${leadId}/documents`);
-                const docsData = await docsRes.json();
+                // Load docs, verifications, and payment status in parallel
+                const [docsRes, verRes, payRes] = await Promise.all([
+                    fetch(`/api/kyc/${leadId}/documents`),
+                    fetch(`/api/kyc/${leadId}/verifications`),
+                    fetch(`/api/kyc/${leadId}/payment-status`),
+                ]);
+
+                const [docsData, verData, payData] = await Promise.all([
+                    docsRes.json(), verRes.json(), payRes.json(),
+                ]);
+
                 if (docsData.success) {
                     const docMap: Record<string, DocUpload> = {};
                     docsData.data.forEach((d: any) => {
@@ -168,52 +183,73 @@ export default function KYCPage() {
                     setUploadedDocs(docMap);
                 }
 
-                // Load verifications
-                const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
-                const verData = await verRes.json();
                 if (verData.success) setVerifications(verData.data);
 
-            } catch (err) {
-                setApiError('Failed to load KYC data');
-            } finally {
-                setLoading(false);
-            }
+                if (payData.success && payData.data) {
+                    setPaymentStatus(payData.status || 'UNPAID');
+                    setPaymentData({
+                        payment_id: payData.data.id,
+                        qr_id: payData.data.razorpay_qr_id || '',
+                        qr_image_url: payData.data.razorpay_qr_image_url || '',
+                        qr_short_url: payData.data.razorpay_qr_short_url || '',
+                        qr_status: payData.data.razorpay_qr_status || '',
+                        expires_at: payData.data.razorpay_qr_expires_at || '',
+                        base_amount: Number(payData.data.facilitation_fee_base_amount) || 1500,
+                        discount_amount: Number(payData.data.coupon_discount_amount) || 0,
+                        final_amount: Number(payData.data.facilitation_fee_final_amount) || 1500,
+                        coupon_code: payData.data.coupon_code,
+                        facilitation_fee_status: payData.status,
+                        razorpay_payment_id: payData.data.razorpay_payment_id,
+                    });
+                }
+            } catch { setApiError('Failed to load KYC data'); }
+            finally { setLoading(false); }
         };
-        checkAccess();
+        loadData();
     }, [leadId]);
 
-    // Auto-save every 2 minutes
+    // ── Payment polling (every 5s when QR is active) ──
+    useEffect(() => {
+        if (paymentStatus !== 'QR_GENERATED') {
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            return;
+        }
+
+        pollIntervalRef.current = setInterval(async () => {
+            try {
+                const res = await fetch(`/api/kyc/${leadId}/payment-status`);
+                const data = await res.json();
+                if (data.success) {
+                    setPaymentStatus(data.status);
+                    if (data.status === 'PAID' && data.data) {
+                        setPaymentData(prev => prev ? { ...prev, facilitation_fee_status: 'PAID', razorpay_payment_id: data.data.razorpay_payment_id } : prev);
+                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                    }
+                    if (data.status === 'EXPIRED') {
+                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                    }
+                }
+            } catch { /* silent */ }
+        }, 5000);
+
+        return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
+    }, [paymentStatus, leadId]);
+
+    // ── Auto-save draft every 2 min ──
     useEffect(() => {
         const interval = setInterval(() => {
-            if (Object.keys(uploadedDocs).length > 0) {
-                handleSaveDraft(true);
-            }
+            if (Object.keys(uploadedDocs).length > 0) handleSaveDraft(true);
         }, 120000);
         return () => clearInterval(interval);
     }, [uploadedDocs, paymentMethod, consentStatus]);
 
-    // Poll verification status every 10s when submitted
-    useEffect(() => {
-        if (!verificationSubmitted) return;
-        const poll = setInterval(async () => {
-            try {
-                const res = await fetch(`/api/kyc/${leadId}/verifications`);
-                const data = await res.json();
-                if (data.success) setVerifications(data.data);
-            } catch { /* silent */ }
-        }, 10000);
-        return () => clearInterval(poll);
-    }, [verificationSubmitted, leadId]);
+    // ── Helpers ──────────────────────────────────────────────────────────────
 
     const getRequiredDocs = () => {
-        if (paymentMethod === 'upfront') return UPFRONT_DOCUMENTS;
+        if (!isFinance) return UPFRONT_DOCUMENTS;
         const docs = [...FINANCE_DOCUMENTS];
-        // RC Copy conditional: only if asset category is 2W/3W/4W
         const isVehicle = lead && ['2W', '3W', '4W'].includes(lead.asset_model);
-        return docs.map(d => {
-            if (d.key === 'rc_copy') return { ...d, required: isVehicle };
-            return d;
-        });
+        return docs.map(d => d.key === 'rc_copy' ? { ...d, required: isVehicle } : d);
     };
 
     const getDocStats = () => {
@@ -223,18 +259,86 @@ export default function KYCPage() {
         return { total: required.length, uploaded: uploaded.length, pending };
     };
 
-    // Document Upload Handler (with auto-OCR + classification + comparison)
+    const feePaid = paymentStatus === 'PAID';
+    const documentsGated = isFinance && !feePaid;
+
+    // ── Payment Handlers ─────────────────────────────────────────────────────
+
+    const handleValidateCoupon = async () => {
+        if (!couponCode.trim()) return;
+        setCouponLoading(true);
+        setCouponResult(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/validate-coupon`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ couponCode: couponCode.trim() }),
+            });
+            const data = await res.json();
+            setCouponResult(data);
+        } catch {
+            setCouponResult({ valid: false, message: 'Network error' });
+        } finally {
+            setCouponLoading(false);
+        }
+    };
+
+    const handleGenerateQr = async () => {
+        setGeneratingQr(true);
+        setApiError(null);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/create-payment-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    coupon_code: couponResult?.valid ? couponResult.coupon_code : null,
+                    coupon_id: couponResult?.valid ? couponResult.coupon_id : null,
+                }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setPaymentData(data.data);
+                setPaymentStatus('QR_GENERATED');
+            } else {
+                setApiError(data.error?.message || 'Failed to generate QR');
+            }
+        } catch {
+            setApiError('Failed to generate payment QR');
+        } finally {
+            setGeneratingQr(false);
+        }
+    };
+
+    const handleRegenerateQr = async () => {
+        setRegeneratingQr(true);
+        try {
+            const res = await fetch(`/api/kyc/${leadId}/regenerate-payment-qr`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const data = await res.json();
+            if (data.success) {
+                setPaymentData(prev => prev ? { ...prev, ...data.data, facilitation_fee_status: 'QR_GENERATED' } : data.data);
+                setPaymentStatus('QR_GENERATED');
+            } else {
+                setApiError(data.error?.message || 'Failed to regenerate QR');
+            }
+        } catch {
+            setApiError('Failed to regenerate QR');
+        } finally {
+            setRegeneratingQr(false);
+        }
+    };
+
+    // ── Document Upload ──────────────────────────────────────────────────────
+
     const handleDocUpload = async (docType: string, file: File) => {
-        // Validate file
-        if (file.size > 5 * 1024 * 1024) {
-            setApiError('File size must be less than 5MB');
-            return;
-        }
+        if (file.size > 5 * 1024 * 1024) { setApiError('File size must be less than 5MB'); return; }
         const allowedTypes = ['image/png', 'image/jpeg', 'application/pdf'];
-        if (!allowedTypes.includes(file.type)) {
-            setApiError('Only PNG, JPEG, and PDF files are allowed');
-            return;
-        }
+        if (!allowedTypes.includes(file.type)) { setApiError('Only PNG, JPEG, and PDF files are allowed'); return; }
+
+        // Set uploading state
+        setUploadedDocs(prev => ({ ...prev, [docType]: { key: docType, file_url: null, verification_status: 'initiating' } }));
 
         const formData = new FormData();
         formData.append('file', file);
@@ -254,28 +358,18 @@ export default function KYCPage() {
                     ocr_failed: data.ocr_failed || false,
                     enable_manual_entry: data.enable_manual_entry || false,
                 };
-
                 setUploadedDocs(prev => ({ ...prev, [docType]: docUpload }));
 
-                // Store OCR comparison results
-                if (data.ocr_comparison && data.ocr_comparison.length > 0) {
+                if (data.ocr_comparison?.length > 0) {
                     setOcrComparisons(prev => ({ ...prev, [docType]: data.ocr_comparison }));
                 }
+                if (data.warning) setApiError(data.warning);
+                if (data.ocr_failed || data.enable_manual_entry) setManualEntryDoc(docType);
 
-                // Show classification mismatch warning
-                if (data.warning) {
-                    setApiError(data.warning);
-                }
-
-                // If OCR failed, enable manual entry for this doc
-                if (data.ocr_failed || data.enable_manual_entry) {
-                    setManualEntryDoc(docType);
-                }
-
-                // Auto-trigger face match when both passport_photo and aadhaar_front are uploaded
+                // Auto face match
                 if (docType === 'passport_photo' || docType === 'aadhaar_front') {
                     const otherDoc = docType === 'passport_photo' ? 'aadhaar_front' : 'passport_photo';
-                    const otherUpload = docType === 'passport_photo' ? uploadedDocs['aadhaar_front'] : uploadedDocs['passport_photo'];
+                    const otherUpload = uploadedDocs[otherDoc];
                     if (otherUpload?.file_url) {
                         triggerAutoFaceMatch(
                             docType === 'passport_photo' ? data.file_url : otherUpload.file_url,
@@ -284,155 +378,95 @@ export default function KYCPage() {
                     }
                 }
 
-                // Auto-trigger address validation when aadhaar_back is uploaded
+                // Auto address match
                 if (docType === 'aadhaar_back' && data.ocr_data?.address) {
                     triggerAutoAddressMatch(data.ocr_data.address);
                 }
             } else {
+                setUploadedDocs(prev => ({ ...prev, [docType]: { key: docType, file_url: null, verification_status: 'failed', failed_reason: data.error?.message } }));
                 setApiError(data.error?.message || 'Upload failed');
             }
         } catch {
+            setUploadedDocs(prev => ({ ...prev, [docType]: { key: docType, file_url: null, verification_status: 'failed', failed_reason: 'Upload failed' } }));
             setApiError('Upload failed. Please try again.');
         }
     };
 
-    // Auto face match between passport photo and aadhaar
     const triggerAutoFaceMatch = async (passportUrl: string, aadhaarUrl: string) => {
         try {
-            // Fetch both images as blobs
-            const [img1Res, img2Res] = await Promise.all([
-                fetch(passportUrl),
-                fetch(aadhaarUrl),
-            ]);
+            const [img1Res, img2Res] = await Promise.all([fetch(passportUrl), fetch(aadhaarUrl)]);
             const [img1Blob, img2Blob] = await Promise.all([img1Res.blob(), img2Res.blob()]);
-            const img1File = new File([img1Blob], 'passport.jpg', { type: 'image/jpeg' });
-            const img2File = new File([img2Blob], 'aadhaar.jpg', { type: 'image/jpeg' });
-
-            setFaceImg1(img1File);
-            setFaceImg2(img2File);
-
             const form = new FormData();
-            form.append('image1', img1File);
-            form.append('image2', img2File);
+            form.append('image1', new File([img1Blob], 'passport.jpg', { type: 'image/jpeg' }));
+            form.append('image2', new File([img2Blob], 'aadhaar.jpg', { type: 'image/jpeg' }));
             setFaceMatching(true);
             const res = await fetch(`/api/kyc/${leadId}/decentro/face-match`, { method: 'POST', body: form });
             const data = await res.json();
             setFaceResult({ success: data.success, message: data.message, match_score: data.match_score, is_match: data.is_match });
-        } catch {
-            // Auto face match failed silently - user can still do manual
-        } finally {
-            setFaceMatching(false);
-        }
+        } catch { /* silent */ }
+        finally { setFaceMatching(false); }
     };
 
-    // Auto address match: compare aadhaar address with lead address
-    const triggerAutoAddressMatch = async (aadhaarAddress: string) => {
+    const triggerAutoAddressMatch = (aadhaarAddress: string) => {
         if (!lead?.current_address) return;
-        // Simple fuzzy match (same logic as server-side)
         const a = aadhaarAddress.trim().toLowerCase().replace(/\s+/g, ' ');
         const b = (lead.current_address || '').trim().toLowerCase().replace(/\s+/g, ' ');
         const similarity = a === b ? 100 : Math.round((1 - Math.abs(a.length - b.length) / Math.max(a.length, b.length)) * 100);
-
         if (similarity < 70) {
             setOcrComparisons(prev => ({
                 ...prev,
                 'address_match': [{
-                    field: 'address',
-                    label: 'Address (Aadhaar vs Lead)',
-                    ocrValue: aadhaarAddress,
-                    leadValue: lead.current_address,
-                    match: false,
-                    similarity,
+                    field: 'address', label: 'Address (Aadhaar vs Lead)',
+                    ocrValue: aadhaarAddress, leadValue: lead.current_address,
+                    match: false, similarity,
                 }],
             }));
         }
     };
 
-    // Save manual entry data
+    // ── Manual Entry ─────────────────────────────────────────────────────────
+
     const handleSaveManualEntry = async () => {
         if (!manualEntryDoc) return;
         setSavingManual(true);
         try {
-            // Save manual OCR data to the document
             const res = await fetch(`/api/kyc/${leadId}/save-draft`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     step: 2,
-                    data: {
-                        manualOcrData: { [manualEntryDoc]: manualFields },
-                        paymentMethod,
-                        documents: uploadedDocs,
-                        consentStatus,
-                    },
+                    data: { manualOcrData: { [manualEntryDoc]: manualFields }, paymentMethod, documents: uploadedDocs, consentStatus },
                 }),
             });
             if (res.ok) {
-                // Mark document as manually entered
                 setUploadedDocs(prev => ({
                     ...prev,
-                    [manualEntryDoc!]: {
-                        ...prev[manualEntryDoc!],
-                        verification_status: 'in_progress',
-                        ocr_failed: false,
-                        enable_manual_entry: false,
-                        ocr_data: manualFields,
-                    },
+                    [manualEntryDoc!]: { ...prev[manualEntryDoc!], verification_status: 'in_progress', ocr_failed: false, enable_manual_entry: false, ocr_data: manualFields },
                 }));
                 setManualEntryDoc(null);
                 setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' });
             }
-        } catch {
-            setApiError('Failed to save manual entry');
-        } finally {
-            setSavingManual(false);
-        }
+        } catch { setApiError('Failed to save manual entry'); }
+        finally { setSavingManual(false); }
     };
 
-    // Payment Method Change
-    const handlePaymentMethodChange = async (method: 'finance' | 'upfront') => {
-        setPaymentMethod(method);
-        try {
-            await fetch(`/api/kyc/${leadId}/payment-method`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ payment_method: method })
-            });
-        } catch { /* silent */ }
-    };
+    // ── Consent ──────────────────────────────────────────────────────────────
 
-    // Consent Handlers
     const handleSendConsent = async (channel: 'sms' | 'whatsapp') => {
         try {
             const res = await fetch(`/api/kyc/${leadId}/send-consent`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ channel })
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel }),
             });
             const data = await res.json();
             if (data.success) setConsentStatus('link_sent');
             else setApiError(data.error?.message || 'Failed to send consent');
-        } catch {
-            setApiError('Failed to send consent');
-        }
-    };
-
-    const handleGenerateConsentPDF = async () => {
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/generate-consent-pdf`, { method: 'POST' });
-            const data = await res.json();
-            if (data.success && data.pdfUrl) {
-                window.open(data.pdfUrl, '_blank');
-            }
-        } catch {
-            setApiError('Failed to generate PDF');
-        }
+        } catch { setApiError('Failed to send consent'); }
     };
 
     const handleUploadSignedConsent = async (file: File) => {
         if (file.type !== 'application/pdf' || file.size > 10 * 1024 * 1024) {
-            setApiError('Only PDF files under 10MB are allowed');
-            return;
+            setApiError('Only PDF files under 10MB are allowed'); return;
         }
         const formData = new FormData();
         formData.append('file', file);
@@ -440,73 +474,25 @@ export default function KYCPage() {
             const res = await fetch(`/api/kyc/${leadId}/upload-signed-consent`, { method: 'POST', body: formData });
             const data = await res.json();
             if (data.success) setConsentStatus('manual_uploaded');
-        } catch {
-            setApiError('Upload failed');
-        }
+        } catch { setApiError('Upload failed'); }
     };
 
-    // Coupon Validation
-    const handleValidateCoupon = async () => {
-        if (!couponCode.trim()) return;
-        setCouponLoading(true);
+    const handleGenerateConsentPDF = async () => {
         try {
-            const res = await fetch('/api/kyc/validate-coupon', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ couponCode, leadId })
-            });
+            const res = await fetch(`/api/kyc/${leadId}/generate-consent-pdf`, { method: 'POST' });
             const data = await res.json();
-            setCouponValid(data.valid);
-        } catch {
-            setCouponValid(false);
-        } finally {
-            setCouponLoading(false);
-        }
+            if (data.success && data.pdfUrl) window.open(data.pdfUrl, '_blank');
+        } catch { setApiError('Failed to generate PDF'); }
     };
 
-    // Submit for Verification
-    const handleSubmitVerification = async () => {
-        const stats = getDocStats();
-        if (stats.uploaded < stats.total) {
-            setApiError(`Please upload all required documents (${stats.uploaded}/${stats.total})`);
-            return;
-        }
-        if (!couponValid) {
-            setApiError('Please validate a coupon code first');
-            return;
-        }
-
-        setSubmitting(true);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/submit-verification`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ couponCode })
-            });
-            const data = await res.json();
-            if (data.success) {
-                setVerificationSubmitted(true);
-                setVerifications(data.verifications || []);
-            } else {
-                setApiError(data.error?.message || 'Verification submission failed');
-            }
-        } catch {
-            setApiError('Failed to submit for verification');
-        } finally {
-            setSubmitting(false);
-        }
-    };
-
-    // ── Decentro Handlers ────────────────────────────────────────────────────
+    // ── Decentro Verification Handlers ───────────────────────────────────────
 
     const handlePanVerify = async () => {
         if (!panNumber.trim()) return;
-        setPanVerifying(true);
-        setPanResult(null);
+        setPanVerifying(true); setPanResult(null);
         try {
             const res = await fetch(`/api/kyc/${leadId}/decentro/pan`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ pan_number: panNumber.trim() }),
             });
             const data = await res.json();
@@ -514,36 +500,25 @@ export default function KYCPage() {
             const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
             const verData = await verRes.json();
             if (verData.success) setVerifications(verData.data);
-        } catch {
-            setPanResult({ success: false, message: 'Request failed' });
-        } finally {
-            setPanVerifying(false);
-        }
+        } catch { setPanResult({ success: false, message: 'Request failed' }); }
+        finally { setPanVerifying(false); }
     };
 
     const handleAadhaarSendOtp = async () => {
         if (!aadhaarNumber.trim()) return;
-        setAadhaarVerifying(true);
-        setAadhaarResult(null);
+        setAadhaarVerifying(true); setAadhaarResult(null);
         try {
             const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-otp`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ aadhaar_number: aadhaarNumber.trim() }),
             });
             const data = await res.json();
             if (data.success && data.decentroTxnId) {
-                setAadhaarTxnId(data.decentroTxnId);
-                setAadhaarStep('otp');
+                setAadhaarTxnId(data.decentroTxnId); setAadhaarStep('otp');
                 setAadhaarResult({ success: true, message: 'OTP sent to Aadhaar-linked mobile' });
-            } else {
-                setAadhaarResult({ success: false, message: data.message || 'Failed to send OTP' });
-            }
-        } catch {
-            setAadhaarResult({ success: false, message: 'Request failed' });
-        } finally {
-            setAadhaarVerifying(false);
-        }
+            } else { setAadhaarResult({ success: false, message: data.message || 'Failed to send OTP' }); }
+        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
+        finally { setAadhaarVerifying(false); }
     };
 
     const handleAadhaarVerifyOtp = async () => {
@@ -551,8 +526,7 @@ export default function KYCPage() {
         setAadhaarVerifying(true);
         try {
             const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-verify`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ decentro_txn_id: aadhaarTxnId, otp: aadhaarOtp.trim() }),
             });
             const data = await res.json();
@@ -563,162 +537,92 @@ export default function KYCPage() {
                 const verData = await verRes.json();
                 if (verData.success) setVerifications(verData.data);
             }
-        } catch {
-            setAadhaarResult({ success: false, message: 'Request failed' });
-        } finally {
-            setAadhaarVerifying(false);
-        }
+        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
+        finally { setAadhaarVerifying(false); }
     };
 
     const handleBankVerify = async () => {
         if (!bankAccountNo.trim() || !bankIfsc.trim()) return;
-        setBankVerifying(true);
-        setBankResult(null);
+        setBankVerifying(true); setBankResult(null);
         try {
             const res = await fetch(`/api/kyc/${leadId}/decentro/bank`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    account_number: bankAccountNo.trim(),
-                    ifsc: bankIfsc.trim(),
-                    name: bankName.trim() || undefined,
-                    perform_name_match: !!bankName.trim(),
-                }),
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ account_number: bankAccountNo.trim(), ifsc: bankIfsc.trim(), name: bankName.trim() || undefined, perform_name_match: !!bankName.trim() }),
             });
             const data = await res.json();
             setBankResult({ success: data.success, message: data.message, data: data.data });
             const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
             const verData = await verRes.json();
             if (verData.success) setVerifications(verData.data);
-        } catch {
-            setBankResult({ success: false, message: 'Request failed' });
-        } finally {
-            setBankVerifying(false);
-        }
+        } catch { setBankResult({ success: false, message: 'Request failed' }); }
+        finally { setBankVerifying(false); }
     };
 
-    const handleOcrExtract = async () => {
-        if (!ocrFile) return;
-        setOcrExtracting(true);
-        setOcrResult(null);
+    // ── Submit & Save ────────────────────────────────────────────────────────
+
+    const handleSubmitVerification = async () => {
+        const stats = getDocStats();
+        if (stats.uploaded < stats.total) { setApiError(`Upload all documents (${stats.uploaded}/${stats.total})`); return; }
+        if (isFinance && !feePaid) { setApiError('Facilitation fee payment is required'); return; }
+
+        setSubmitting(true);
         try {
-            const form = new FormData();
-            form.append('file', ocrFile);
-            form.append('document_type', ocrDocType);
-            const res = await fetch(`/api/kyc/${leadId}/decentro/ocr`, { method: 'POST', body: form });
+            const res = await fetch(`/api/kyc/${leadId}/submit-verification`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ couponCode }),
+            });
             const data = await res.json();
-            setOcrResult({ success: data.success, message: data.message, data: data.data });
-        } catch {
-            setOcrResult({ success: false, message: 'Request failed' });
-        } finally {
-            setOcrExtracting(false);
-        }
+            if (data.success) { setVerificationSubmitted(true); setVerifications(data.verifications || []); }
+            else { setApiError(data.error?.message || 'Verification submission failed'); }
+        } catch { setApiError('Failed to submit verification'); }
+        finally { setSubmitting(false); }
     };
 
-    const handleFaceMatch = async () => {
-        if (!faceImg1 || !faceImg2) return;
-        setFaceMatching(true);
-        setFaceResult(null);
-        try {
-            const form = new FormData();
-            form.append('image1', faceImg1);
-            form.append('image2', faceImg2);
-            const res = await fetch(`/api/kyc/${leadId}/decentro/face-match`, { method: 'POST', body: form });
-            const data = await res.json();
-            setFaceResult({ success: data.success, message: data.message, match_score: data.match_score, is_match: data.is_match });
-        } catch {
-            setFaceResult({ success: false, message: 'Request failed' });
-        } finally {
-            setFaceMatching(false);
-        }
-    };
-
-    // Save Draft
     const handleSaveDraft = async (auto = false) => {
         setSaving(true);
         try {
             await fetch(`/api/kyc/${leadId}/save-draft`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    step: 2,
-                    data: { paymentMethod, documents: uploadedDocs, consentStatus }
-                })
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ step: 2, data: { paymentMethod, documents: uploadedDocs, consentStatus } }),
             });
-            const now = new Date().toLocaleTimeString();
-            setLastSaved(auto ? `Auto-saved at ${now}` : `Saved at ${now}`);
+            setLastSaved(auto ? `Auto-saved at ${new Date().toLocaleTimeString()}` : `Saved at ${new Date().toLocaleTimeString()}`);
         } catch { /* silent */ }
         finally { setSaving(false); }
     };
 
-    // Save & Next
     const handleSaveAndNext = async () => {
         const stats = getDocStats();
-        if (stats.uploaded < stats.total) {
-            setApiError(`Missing documents: ${stats.pending.map(d => d.label).join(', ')}`);
-            return;
-        }
+        if (stats.uploaded < stats.total) { setApiError(`Missing: ${stats.pending.map(d => d.label).join(', ')}`); return; }
         if (!['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus)) {
-            setApiError('Customer consent is required before proceeding');
-            return;
+            setApiError('Customer consent is required'); return;
         }
-        // Check for critical verification failures
         const failedVer = verifications.filter(v => v.status === 'failed');
-        if (failedVer.length > 0) {
-            setApiError(`Verification failures: ${failedVer.map(v => v.label).join(', ')}. Please re-upload and retry.`);
-            return;
-        }
+        if (failedVer.length > 0) { setApiError(`Verification failures: ${failedVer.map(v => v.label).join(', ')}`); return; }
 
         setSaving(true);
         try {
             const res = await fetch(`/api/kyc/${leadId}/complete-and-next`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paymentMethod })
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paymentMethod }),
             });
             const data = await res.json();
             if (data.success) {
-                if (data.requiresInterim) {
-                    router.push(`/dealer-portal/leads/${leadId}/kyc/interim`);
-                } else {
-                    router.push(`/dealer-portal/leads/${leadId}`); // Step 3 placeholder
-                }
-            } else {
-                setApiError(data.error?.message || 'Failed to proceed');
-            }
-        } catch {
-            setApiError('Connection failed');
-        } finally {
-            setSaving(false);
-        }
+                if (data.requiresInterim) router.push(`/dealer-portal/leads/${leadId}/kyc/interim`);
+                else router.push(`/dealer-portal/leads/${leadId}`);
+            } else { setApiError(data.error?.message || 'Failed to proceed'); }
+        } catch { setApiError('Connection failed'); }
+        finally { setSaving(false); }
     };
 
-    // Re-upload for failed verifications
-    const handleReUpload = async (verificationType: string, file: File) => {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('verificationType', verificationType);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/re-upload`, { method: 'POST', body: formData });
-            const data = await res.json();
-            if (data.success) {
-                setVerifications(prev => prev.map(v =>
-                    v.type === verificationType ? { ...v, status: 'awaiting_action', failed_reason: null } : v
-                ));
-            }
-        } catch {
-            setApiError('Re-upload failed');
-        }
-    };
+    // ── Render ───────────────────────────────────────────────────────────────
 
-    // RENDER
     if (loading) return <div className="min-h-screen flex items-center justify-center bg-[#F8F9FB]"><Loader2 className="w-10 h-10 animate-spin text-[#1D4ED8]" /></div>;
     if (accessDenied) return (
         <div className="min-h-screen flex items-center justify-center bg-[#F8F9FB]">
             <div className="text-center">
                 <Shield className="w-16 h-16 text-red-400 mx-auto mb-4" />
                 <h2 className="text-2xl font-bold text-gray-900 mb-2">Access Denied</h2>
-                <p className="text-gray-500 mb-6">KYC is only available for Hot leads that have been created.</p>
+                <p className="text-gray-500 mb-6">KYC is only available for Hot leads.</p>
                 <button onClick={() => router.push('/dealer-portal/leads')} className="px-6 py-3 bg-[#0047AB] text-white rounded-xl font-bold">Back to Leads</button>
             </div>
         </div>
@@ -745,17 +649,16 @@ export default function KYCPage() {
                         </div>
                     </div>
                     <div className="flex items-center gap-6">
-                        {/* Consent Status Badge */}
-                        <div className={`px-4 py-2 rounded-full text-xs font-bold ${consentStatus === 'verified' || consentStatus === 'digitally_signed' || consentStatus === 'manual_uploaded'
-                            ? 'bg-green-50 text-green-700 border border-green-200'
-                            : consentStatus === 'link_sent'
-                                ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                : 'bg-gray-50 text-gray-500 border border-gray-200'
+                        {/* Payment Status Badge */}
+                        {isFinance && (
+                            <div className={`px-4 py-2 rounded-full text-xs font-bold ${
+                                feePaid ? 'bg-green-50 text-green-700 border border-green-200'
+                                    : paymentStatus === 'QR_GENERATED' ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                        : 'bg-gray-50 text-gray-500 border border-gray-200'
                             }`}>
-                            Consent: {consentStatus.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                        </div>
-
-                        {/* Progress */}
+                                Fee: {paymentStatus.replace(/_/g, ' ')}
+                            </div>
+                        )}
                         <div>
                             <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-right mb-1.5">Workflow Progress</p>
                             <div className="flex items-center gap-6">
@@ -782,35 +685,199 @@ export default function KYCPage() {
                 )}
 
                 <main className="grid grid-cols-1 gap-6">
-                    {/* PAYMENT METHOD */}
-                    <SectionCard title="Payment Method">
-                        <div className="flex bg-[#F1F3F5] rounded-[14px] p-1.5 max-w-md">
-                            {(['finance', 'upfront'] as const).map(m => (
-                                <button
-                                    key={m}
-                                    onClick={() => handlePaymentMethodChange(m)}
-                                    className={`flex-1 py-3 text-sm font-bold rounded-[10px] transition-all capitalize ${paymentMethod === m ? 'bg-[#0047AB] text-white shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
-                                >
-                                    {m === 'finance' ? 'Finance / Loan' : 'Upfront Full Payment'}
-                                </button>
-                            ))}
-                        </div>
-                        <p className="text-xs text-gray-400 mt-3">
-                            {paymentMethod === 'finance'
-                                ? 'All 11 KYC documents are required for loan processing.'
-                                : 'Only basic KYC (3 documents) is required for upfront payment.'}
-                        </p>
-                    </SectionCard>
 
-                    {/* DOCUMENT UPLOAD CARDS */}
-                    <SectionCard title="Document Upload">
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 1: FACILITATION FEE PAYMENT (Finance leads only)
+                       ═══════════════════════════════════════════════════════════ */}
+                    {isFinance && (
+                        <SectionCard title="Facilitation Fee Payment" icon={<CreditCard className="w-5 h-5 text-[#0047AB]" />}>
+                            {feePaid ? (
+                                /* ── PAID State ── */
+                                <div className="p-6 bg-green-50 border border-green-200 rounded-xl">
+                                    <div className="flex items-center gap-3">
+                                        <CheckCircle2 className="w-8 h-8 text-green-600" />
+                                        <div>
+                                            <p className="text-lg font-bold text-green-800">Payment Received</p>
+                                            <p className="text-sm text-green-600">
+                                                Amount: <span className="font-bold">&#8377;{paymentData?.final_amount}</span>
+                                                {paymentData?.razorpay_payment_id && <span className="ml-3 font-mono text-xs">Ref: {paymentData.razorpay_payment_id}</span>}
+                                            </p>
+                                            {paymentData?.coupon_code && (
+                                                <p className="text-xs text-green-500 mt-1">Coupon applied: {paymentData.coupon_code} (saved &#8377;{paymentData.discount_amount})</p>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : paymentStatus === 'QR_GENERATED' && paymentData ? (
+                                /* ── QR Active State ── */
+                                <div className="space-y-6">
+                                    <div className="flex flex-col md:flex-row gap-8">
+                                        {/* QR Code */}
+                                        <div className="flex flex-col items-center">
+                                            <div className="bg-white p-4 rounded-2xl border-2 border-gray-100 shadow-sm">
+                                                {paymentData.qr_image_url ? (
+                                                    <img src={paymentData.qr_image_url} alt="Payment QR" className="w-[220px] h-[220px] object-contain" />
+                                                ) : (
+                                                    <div className="w-[220px] h-[220px] flex items-center justify-center bg-gray-50 rounded-xl">
+                                                        <QrCode className="w-16 h-16 text-gray-300" />
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <p className="text-xs text-gray-400 mt-3 text-center">Scan with any UPI app</p>
+                                            {paymentData.qr_short_url && (
+                                                <a href={paymentData.qr_short_url} target="_blank" rel="noopener noreferrer"
+                                                    className="text-xs text-[#0047AB] font-medium mt-1 hover:underline">
+                                                    Open UPI link
+                                                </a>
+                                            )}
+                                        </div>
+
+                                        {/* Payment Details */}
+                                        <div className="flex-1 space-y-4">
+                                            <div className="p-4 bg-gray-50 rounded-xl space-y-3">
+                                                <div className="flex justify-between text-sm">
+                                                    <span className="text-gray-500">Base Amount</span>
+                                                    <span className="font-bold text-gray-900">&#8377;{paymentData.base_amount}</span>
+                                                </div>
+                                                {paymentData.discount_amount > 0 && (
+                                                    <div className="flex justify-between text-sm">
+                                                        <span className="text-green-600 flex items-center gap-1"><Tag className="w-3 h-3" /> Discount {paymentData.coupon_code && `(${paymentData.coupon_code})`}</span>
+                                                        <span className="font-bold text-green-600">-&#8377;{paymentData.discount_amount}</span>
+                                                    </div>
+                                                )}
+                                                <div className="border-t border-gray-200 pt-3 flex justify-between text-sm">
+                                                    <span className="font-bold text-gray-900">Amount to Pay</span>
+                                                    <span className="text-xl font-black text-[#0047AB]">&#8377;{paymentData.final_amount}</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Expiry timer */}
+                                            {paymentData.expires_at && (
+                                                <div className="flex items-center gap-2 text-xs text-amber-600">
+                                                    <Timer className="w-4 h-4" />
+                                                    QR expires at {new Date(paymentData.expires_at).toLocaleTimeString()}
+                                                </div>
+                                            )}
+
+                                            {/* Waiting indicator */}
+                                            <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                                                <Loader2 className="w-5 h-5 animate-spin text-[#0047AB]" />
+                                                <div>
+                                                    <p className="text-sm font-bold text-[#0047AB]">Waiting for payment...</p>
+                                                    <p className="text-xs text-blue-500">Payment will be detected automatically</p>
+                                                </div>
+                                            </div>
+
+                                            {/* Regenerate QR */}
+                                            <button
+                                                onClick={handleRegenerateQr}
+                                                disabled={regeneratingQr}
+                                                className="text-xs text-gray-500 hover:text-[#0047AB] flex items-center gap-1 transition-colors"
+                                            >
+                                                {regeneratingQr ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                                                QR expired? Generate new one
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : paymentStatus === 'EXPIRED' ? (
+                                /* ── Expired State ── */
+                                <div className="space-y-4">
+                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-3">
+                                        <Clock className="w-6 h-6 text-amber-600" />
+                                        <div>
+                                            <p className="text-sm font-bold text-amber-800">Payment QR has expired</p>
+                                            <p className="text-xs text-amber-600">Click below to generate a new QR code</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        onClick={handleRegenerateQr}
+                                        disabled={regeneratingQr}
+                                        className="px-6 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2"
+                                    >
+                                        {regeneratingQr ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                        Generate New QR Code
+                                    </button>
+                                </div>
+                            ) : (
+                                /* ── UNPAID State: Coupon + Generate QR ── */
+                                <div className="space-y-6">
+                                    <p className="text-sm text-gray-500">
+                                        A facilitation fee is required for finance leads. Apply a coupon code if available, then generate a UPI QR code for payment.
+                                    </p>
+
+                                    {/* Coupon Input */}
+                                    <div className="p-5 bg-gray-50 rounded-xl space-y-4">
+                                        <h4 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                                            <Tag className="w-4 h-4 text-[#0047AB]" /> Apply Coupon (Optional)
+                                        </h4>
+                                        <div className="flex gap-3">
+                                            <input
+                                                value={couponCode}
+                                                onChange={e => { setCouponCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20)); setCouponResult(null); }}
+                                                placeholder="Enter coupon code"
+                                                className="flex-1 h-11 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]"
+                                                maxLength={20}
+                                            />
+                                            <button
+                                                onClick={handleValidateCoupon}
+                                                disabled={!couponCode.trim() || couponLoading}
+                                                className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all"
+                                            >
+                                                {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Apply'}
+                                            </button>
+                                        </div>
+                                        {couponResult?.valid && (
+                                            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
+                                                <div className="flex items-center gap-2 text-green-700 font-bold">
+                                                    <CheckCircle2 className="w-4 h-4" /> {couponResult.message}
+                                                </div>
+                                                <div className="flex justify-between mt-2 text-xs text-green-600">
+                                                    <span>Base: &#8377;{couponResult.base_amount}</span>
+                                                    <span>Discount: -&#8377;{couponResult.discount_amount}</span>
+                                                    <span className="font-bold">Pay: &#8377;{couponResult.final_amount}</span>
+                                                </div>
+                                            </div>
+                                        )}
+                                        {couponResult && !couponResult.valid && (
+                                            <p className="text-xs font-bold text-red-500 flex items-center gap-1"><XCircle className="w-3 h-3" /> {couponResult.message}</p>
+                                        )}
+                                    </div>
+
+                                    {/* Generate QR Button */}
+                                    <button
+                                        onClick={handleGenerateQr}
+                                        disabled={generatingQr}
+                                        className="w-full py-4 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all flex items-center justify-center gap-3"
+                                    >
+                                        {generatingQr ? <Loader2 className="w-5 h-5 animate-spin" /> : <QrCode className="w-5 h-5" />}
+                                        Generate Payment QR Code
+                                        {couponResult?.valid
+                                            ? <span className="ml-2 text-blue-200">(&#8377;{couponResult.final_amount})</span>
+                                            : <span className="ml-2 text-blue-200">(&#8377;1,500)</span>
+                                        }
+                                    </button>
+                                </div>
+                            )}
+                        </SectionCard>
+                    )}
+
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 2: DOCUMENT UPLOAD (Gated for finance leads)
+                       ═══════════════════════════════════════════════════════════ */}
+                    <SectionCard
+                        title="Document Upload"
+                        icon={<FileText className="w-5 h-5 text-[#0047AB]" />}
+                        disabled={documentsGated}
+                        disabledMessage="Complete facilitation fee payment to unlock document upload"
+                    >
                         <div className="flex items-center justify-between mb-6">
                             <div className="flex items-center gap-4">
                                 <div className="text-sm font-bold text-gray-900">
-                                    Documents Uploaded: <span className="text-[#0047AB]">{docStats.uploaded}/{docStats.total}</span>
+                                    Documents: <span className="text-[#0047AB]">{docStats.uploaded}/{docStats.total}</span>
                                 </div>
                                 <div className="h-2 w-40 bg-gray-100 rounded-full overflow-hidden">
-                                    <div className="h-full bg-[#0047AB] rounded-full transition-all" style={{ width: `${(docStats.uploaded / docStats.total) * 100}%` }} />
+                                    <div className="h-full bg-[#0047AB] rounded-full transition-all" style={{ width: `${docStats.total > 0 ? (docStats.uploaded / docStats.total) * 100 : 0}%` }} />
                                 </div>
                             </div>
                             {docStats.pending.length > 0 && (
@@ -832,6 +899,7 @@ export default function KYCPage() {
                                         verificationStatus={uploaded?.verification_status}
                                         failedReason={uploaded?.failed_reason}
                                         ocrFailed={uploaded?.ocr_failed}
+                                        uploading={uploaded?.verification_status === 'initiating' && !uploaded?.file_url}
                                         onUpload={(file) => handleDocUpload(doc.key, file)}
                                         onManualEntry={() => setManualEntryDoc(doc.key)}
                                     />
@@ -840,10 +908,12 @@ export default function KYCPage() {
                         </div>
                     </SectionCard>
 
-                    {/* OCR COMPARISON RESULTS */}
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 3: OCR COMPARISON RESULTS
+                       ═══════════════════════════════════════════════════════════ */}
                     {Object.keys(ocrComparisons).length > 0 && (
-                        <SectionCard title="Document Verification Results">
-                            <p className="text-xs text-gray-400 mb-4">Extracted data from uploaded documents compared with lead details. Mismatches are highlighted.</p>
+                        <SectionCard title="Document Verification Results" icon={<Eye className="w-5 h-5 text-[#0047AB]" />}>
+                            <p className="text-xs text-gray-400 mb-4">Extracted data compared with lead details. Mismatches highlighted in red.</p>
                             <div className="space-y-4">
                                 {Object.entries(ocrComparisons).map(([docKey, comparisons]) => (
                                     <div key={docKey} className="p-4 bg-gray-50 rounded-xl">
@@ -856,7 +926,7 @@ export default function KYCPage() {
                                                     <tr className="border-b border-gray-200">
                                                         <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Field</th>
                                                         <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">From Document (OCR)</th>
-                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">From Lead</th>
+                                                        <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">From Lead (Step 1)</th>
                                                         <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Match</th>
                                                         <th className="text-left py-2 px-3 text-xs font-bold text-gray-500 uppercase">Similarity</th>
                                                     </tr>
@@ -888,12 +958,32 @@ export default function KYCPage() {
                                     </div>
                                 ))}
                             </div>
+
+                            {/* Face Match Result */}
+                            {(faceResult || faceMatching) && (
+                                <div className="mt-4 p-4 bg-gray-50 rounded-xl">
+                                    <h4 className="text-sm font-bold text-gray-900 mb-2 flex items-center gap-2">
+                                        <Camera className="w-4 h-4 text-[#0047AB]" /> Face Match
+                                    </h4>
+                                    {faceMatching ? (
+                                        <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Comparing faces...</div>
+                                    ) : faceResult ? (
+                                        <div className={`p-3 rounded-lg text-sm ${faceResult.success && faceResult.is_match ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                            {faceResult.success && faceResult.is_match ? <CheckCircle2 className="w-4 h-4 inline mr-1" /> : <XCircle className="w-4 h-4 inline mr-1" />}
+                                            {faceResult.message}
+                                            {faceResult.match_score != null && <span className="ml-2 font-bold">Score: {faceResult.match_score}%</span>}
+                                        </div>
+                                    ) : null}
+                                </div>
+                            )}
                         </SectionCard>
                     )}
 
-                    {/* MANUAL ENTRY FALLBACK (when OCR fails) */}
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 4: MANUAL ENTRY FALLBACK
+                       ═══════════════════════════════════════════════════════════ */}
                     {manualEntryDoc && (
-                        <SectionCard title="Manual Data Entry">
+                        <SectionCard title="Manual Data Entry" icon={<FileText className="w-5 h-5 text-amber-500" />}>
                             <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl mb-4">
                                 <div className="flex items-center gap-2 text-amber-700 text-sm font-medium mb-1">
                                     <AlertCircle className="w-4 h-4" />
@@ -904,52 +994,19 @@ export default function KYCPage() {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 {(manualEntryDoc.includes('aadhaar') || manualEntryDoc.includes('pan')) && (
                                     <>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-gray-700">Full Name (as on document)</label>
-                                            <input
-                                                value={manualFields.name}
-                                                onChange={e => setManualFields(prev => ({ ...prev, name: e.target.value }))}
-                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                                placeholder="Full name as printed"
-                                            />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-gray-700">Father/Husband Name</label>
-                                            <input
-                                                value={manualFields.father_name}
-                                                onChange={e => setManualFields(prev => ({ ...prev, father_name: e.target.value }))}
-                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                                placeholder="Father or husband name"
-                                            />
-                                        </div>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-gray-700">Date of Birth</label>
-                                            <input
-                                                type="date"
-                                                value={manualFields.dob}
-                                                onChange={e => setManualFields(prev => ({ ...prev, dob: e.target.value }))}
-                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                            />
-                                        </div>
+                                        <InputField label="Full Name (as on document)" value={manualFields.name} onChange={v => setManualFields(p => ({ ...p, name: v }))} placeholder="Full name as printed" />
+                                        <InputField label="Father/Husband Name" value={manualFields.father_name} onChange={v => setManualFields(p => ({ ...p, father_name: v }))} placeholder="Father or husband name" />
+                                        <InputField label="Date of Birth" type="date" value={manualFields.dob} onChange={v => setManualFields(p => ({ ...p, dob: v }))} />
                                     </>
                                 )}
                                 {manualEntryDoc.includes('aadhaar') && (
                                     <>
-                                        <div className="space-y-1">
-                                            <label className="text-xs font-bold text-gray-700">Aadhaar Number</label>
-                                            <input
-                                                value={manualFields.aadhaar_number}
-                                                onChange={e => setManualFields(prev => ({ ...prev, aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12) }))}
-                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                                                placeholder="12-digit Aadhaar number"
-                                                maxLength={12}
-                                            />
-                                        </div>
+                                        <InputField label="Aadhaar Number" value={manualFields.aadhaar_number} onChange={v => setManualFields(p => ({ ...p, aadhaar_number: v.replace(/\D/g, '').slice(0, 12) }))} placeholder="12-digit Aadhaar" maxLength={12} mono />
                                         <div className="space-y-1 md:col-span-2">
                                             <label className="text-xs font-bold text-gray-700">Address</label>
                                             <textarea
                                                 value={manualFields.address}
-                                                onChange={e => setManualFields(prev => ({ ...prev, address: e.target.value }))}
+                                                onChange={e => setManualFields(p => ({ ...p, address: e.target.value }))}
                                                 className="w-full h-20 px-3 py-2 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] resize-none"
                                                 placeholder="Full address as on Aadhaar"
                                             />
@@ -957,30 +1014,14 @@ export default function KYCPage() {
                                     </>
                                 )}
                                 {manualEntryDoc.includes('pan') && (
-                                    <div className="space-y-1">
-                                        <label className="text-xs font-bold text-gray-700">PAN Number</label>
-                                        <input
-                                            value={manualFields.pan_number}
-                                            onChange={e => setManualFields(prev => ({ ...prev, pan_number: e.target.value.toUpperCase().slice(0, 10) }))}
-                                            className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]"
-                                            placeholder="ABCDE1234F"
-                                            maxLength={10}
-                                        />
-                                    </div>
+                                    <InputField label="PAN Number" value={manualFields.pan_number} onChange={v => setManualFields(p => ({ ...p, pan_number: v.toUpperCase().slice(0, 10) }))} placeholder="ABCDE1234F" maxLength={10} mono upper />
                                 )}
                             </div>
                             <div className="flex justify-end gap-3 mt-4">
-                                <button
-                                    onClick={() => { setManualEntryDoc(null); setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' }); }}
-                                    className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={handleSaveManualEntry}
-                                    disabled={savingManual || !manualFields.name}
-                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2"
-                                >
+                                <button onClick={() => { setManualEntryDoc(null); setManualFields({ name: '', father_name: '', dob: '', address: '', pan_number: '', aadhaar_number: '' }); }}
+                                    className="px-6 py-2 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50">Cancel</button>
+                                <button onClick={handleSaveManualEntry} disabled={savingManual || !manualFields.name}
+                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
                                     {savingManual ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                                     Save Manual Entry
                                 </button>
@@ -988,33 +1029,111 @@ export default function KYCPage() {
                         </SectionCard>
                     )}
 
-                    {/* CUSTOMER CONSENT */}
-                    <SectionCard title="Customer Consent">
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 5: IDENTITY VERIFICATION (Decentro)
+                       ═══════════════════════════════════════════════════════════ */}
+                    <SectionCard title="Identity Verification (Decentro)" icon={<Shield className="w-5 h-5 text-[#0047AB]" />}>
+                        <p className="text-xs text-gray-400 mb-6">Real-time verification checks via Decentro API.</p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* PAN */}
+                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><CreditCard className="w-4 h-4 text-[#0047AB]" /> PAN Verification</h4>
+                                <div className="flex gap-2">
+                                    <input value={panNumber} onChange={e => { setPanNumber(e.target.value.toUpperCase().slice(0, 10)); setPanResult(null); }}
+                                        placeholder="ABCDE1234F" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase" maxLength={10} />
+                                    <button onClick={handlePanVerify} disabled={panVerifying || panNumber.length !== 10}
+                                        className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
+                                        {panVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify
+                                    </button>
+                                </div>
+                                {panResult && (
+                                    <div className={`p-3 rounded-xl text-xs font-medium ${panResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                        {panResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                        {panResult.message}
+                                        {panResult.data?.name && <div className="mt-1 font-bold">Name: {panResult.data.name}</div>}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Aadhaar */}
+                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
+                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><Shield className="w-4 h-4 text-[#0047AB]" /> Aadhaar Verification (OTP)</h4>
+                                {aadhaarStep === 'input' ? (
+                                    <div className="flex gap-2">
+                                        <input value={aadhaarNumber} onChange={e => { setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12)); setAadhaarResult(null); }}
+                                            placeholder="12-digit Aadhaar" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" maxLength={12} />
+                                        <button onClick={handleAadhaarSendOtp} disabled={aadhaarVerifying || aadhaarNumber.length !== 12}
+                                            className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
+                                            {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />} Send OTP
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-2">
+                                        <div className="flex gap-2">
+                                            <input value={aadhaarOtp} onChange={e => setAadhaarOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                                                placeholder="6-digit OTP" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" maxLength={6} />
+                                            <button onClick={handleAadhaarVerifyOtp} disabled={aadhaarVerifying || aadhaarOtp.length !== 6}
+                                                className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
+                                                {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify
+                                            </button>
+                                        </div>
+                                        <button onClick={() => setAadhaarStep('input')} className="text-xs text-gray-400 hover:text-gray-600">Change Aadhaar number</button>
+                                    </div>
+                                )}
+                                {aadhaarResult && (
+                                    <div className={`p-3 rounded-xl text-xs font-medium ${aadhaarResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                        {aadhaarResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                        {aadhaarResult.message}
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Bank Account */}
+                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3 md:col-span-2">
+                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><CreditCard className="w-4 h-4 text-[#0047AB]" /> Bank Account Verification</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <input value={bankAccountNo} onChange={e => { setBankAccountNo(e.target.value.replace(/\D/g, '')); setBankResult(null); }}
+                                        placeholder="Account Number" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" />
+                                    <input value={bankIfsc} onChange={e => setBankIfsc(e.target.value.toUpperCase().slice(0, 11))}
+                                        placeholder="IFSC Code" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]" maxLength={11} />
+                                    <input value={bankName} onChange={e => setBankName(e.target.value)}
+                                        placeholder="Account Holder Name (optional)" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]" />
+                                </div>
+                                <button onClick={handleBankVerify} disabled={bankVerifying || !bankAccountNo || !bankIfsc}
+                                    className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
+                                    {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify Account
+                                </button>
+                                {bankResult && (
+                                    <div className={`p-3 rounded-xl text-xs font-medium ${bankResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+                                        {bankResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
+                                        {bankResult.message}
+                                        {bankResult.data?.beneficiary_name && <div className="mt-1 font-bold">Name: {bankResult.data.beneficiary_name}</div>}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </SectionCard>
+
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 6: CUSTOMER CONSENT
+                       ═══════════════════════════════════════════════════════════ */}
+                    <SectionCard title="Customer Consent" icon={<FileText className="w-5 h-5 text-[#0047AB]" />}>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="space-y-3">
                                 <h4 className="text-sm font-bold text-gray-900">Digital Consent</h4>
-                                <button
-                                    onClick={() => handleSendConsent('sms')}
-                                    disabled={consentStatus !== 'awaiting_signature'}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all"
-                                >
+                                <button onClick={() => handleSendConsent('sms')} disabled={consentStatus !== 'awaiting_signature'}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all">
                                     <Send className="w-4 h-4" /> Send SMS Consent
                                 </button>
-                                <button
-                                    onClick={() => handleSendConsent('whatsapp')}
-                                    disabled={consentStatus !== 'awaiting_signature'}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-green-700 transition-all"
-                                >
+                                <button onClick={() => handleSendConsent('whatsapp')} disabled={consentStatus !== 'awaiting_signature'}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-green-600 text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-green-700 transition-all">
                                     <Send className="w-4 h-4" /> Send WhatsApp Consent
                                 </button>
                             </div>
-
                             <div className="space-y-3">
                                 <h4 className="text-sm font-bold text-gray-900">Manual Consent</h4>
-                                <button
-                                    onClick={handleGenerateConsentPDF}
-                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm font-bold hover:border-[#0047AB] transition-all"
-                                >
+                                <button onClick={handleGenerateConsentPDF}
+                                    className="w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm font-bold hover:border-[#0047AB] transition-all">
                                     <Download className="w-4 h-4" /> Generate Consent PDF
                                 </button>
                                 <label className="w-full flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-gray-200 rounded-xl text-sm font-bold cursor-pointer hover:border-[#0047AB] transition-all">
@@ -1022,20 +1141,14 @@ export default function KYCPage() {
                                     <input type="file" className="hidden" accept="application/pdf" onChange={e => e.target.files?.[0] && handleUploadSignedConsent(e.target.files[0])} />
                                 </label>
                             </div>
-
                             <div className="space-y-3">
-                                <h4 className="text-sm font-bold text-gray-900">Consent Status</h4>
+                                <h4 className="text-sm font-bold text-gray-900">Status</h4>
                                 <div className="p-4 bg-gray-50 rounded-xl space-y-2">
                                     {['awaiting_signature', 'link_sent', 'digitally_signed', 'manual_uploaded', 'verified'].map(s => (
                                         <div key={s} className="flex items-center gap-2">
-                                            {consentStatus === s || (
-                                                ['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus) &&
-                                                ['awaiting_signature', 'link_sent'].includes(s)
-                                            ) ? (
-                                                <CheckCircle2 className="w-4 h-4 text-green-500" />
-                                            ) : (
-                                                <div className="w-4 h-4 rounded-full border-2 border-gray-200" />
-                                            )}
+                                            {consentStatus === s || (['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus) && ['awaiting_signature', 'link_sent'].includes(s))
+                                                ? <CheckCircle2 className="w-4 h-4 text-green-500" />
+                                                : <div className="w-4 h-4 rounded-full border-2 border-gray-200" />}
                                             <span className={`text-xs font-medium ${consentStatus === s ? 'text-gray-900' : 'text-gray-400'}`}>
                                                 {s.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
                                             </span>
@@ -1046,54 +1159,11 @@ export default function KYCPage() {
                         </div>
                     </SectionCard>
 
-                    {/* VERIFICATION ACTION */}
-                    <SectionCard title="Verification">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-4">
-                                <h4 className="text-sm font-bold text-gray-900">Coupon Code</h4>
-                                <div className="flex gap-3">
-                                    <input
-                                        value={couponCode}
-                                        onChange={e => {
-                                            setCouponCode(e.target.value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20));
-                                            setCouponValid(null);
-                                        }}
-                                        placeholder="Enter verification coupon code"
-                                        className="flex-1 h-11 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                        maxLength={20}
-                                    />
-                                    <button
-                                        onClick={handleValidateCoupon}
-                                        disabled={!couponCode.trim() || couponLoading}
-                                        className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all"
-                                    >
-                                        {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Validate'}
-                                    </button>
-                                </div>
-                                {couponValid === true && <p className="text-xs font-bold text-green-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Coupon validated</p>}
-                                {couponValid === false && <p className="text-xs font-bold text-red-500 flex items-center gap-1"><XCircle className="w-3 h-3" /> Invalid coupon or expired</p>}
-                            </div>
-
-                            <div className="space-y-4">
-                                <h4 className="text-sm font-bold text-gray-900">Submit for Verification</h4>
-                                <button
-                                    onClick={handleSubmitVerification}
-                                    disabled={!couponValid || submitting || docStats.uploaded < docStats.total}
-                                    className="w-full py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all flex items-center justify-center gap-2"
-                                >
-                                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-                                    Submit for Verification
-                                </button>
-                                <p className="text-xs text-gray-400">
-                                    This will trigger automated verification of Aadhaar, PAN, Bank and fetch CIBIL score via third-party APIs.
-                                </p>
-                            </div>
-                        </div>
-                    </SectionCard>
-
-                    {/* VERIFICATION STATUS TABLE */}
+                    {/* ═══════════════════════════════════════════════════════════
+                        SECTION 7: VERIFICATION STATUS TABLE
+                       ═══════════════════════════════════════════════════════════ */}
                     {verifications.length > 0 && (
-                        <SectionCard title="Verification Status">
+                        <SectionCard title="Verification Status" icon={<Shield className="w-5 h-5 text-[#0047AB]" />}>
                             <div className="overflow-x-auto">
                                 <table className="w-full text-sm">
                                     <thead>
@@ -1102,22 +1172,31 @@ export default function KYCPage() {
                                             <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Status</th>
                                             <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Last Update</th>
                                             <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Action</th>
-                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Failed Reason</th>
+                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Reason</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {verifications.map(v => (
                                             <tr key={v.type} className="border-b border-gray-50 hover:bg-gray-50/50">
                                                 <td className="py-3 px-4 font-medium text-gray-900">{v.label}</td>
-                                                <td className="py-3 px-4">
-                                                    <StatusBadge status={v.status} />
-                                                </td>
+                                                <td className="py-3 px-4"><StatusBadge status={v.status} /></td>
                                                 <td className="py-3 px-4 text-gray-500 text-xs">{v.last_update || '-'}</td>
                                                 <td className="py-3 px-4">
                                                     {v.status === 'failed' && (
                                                         <label className="flex items-center gap-1 text-xs font-bold text-[#0047AB] cursor-pointer hover:underline">
                                                             <RefreshCw className="w-3 h-3" /> Re-upload
-                                                            <input type="file" className="hidden" accept="image/*,application/pdf" onChange={e => e.target.files?.[0] && handleReUpload(v.type, e.target.files[0])} />
+                                                            <input type="file" className="hidden" accept="image/*,application/pdf"
+                                                                onChange={async e => {
+                                                                    if (!e.target.files?.[0]) return;
+                                                                    const formData = new FormData();
+                                                                    formData.append('file', e.target.files[0]);
+                                                                    formData.append('verificationType', v.type);
+                                                                    try {
+                                                                        const res = await fetch(`/api/kyc/${leadId}/re-upload`, { method: 'POST', body: formData });
+                                                                        const data = await res.json();
+                                                                        if (data.success) setVerifications(prev => prev.map(x => x.type === v.type ? { ...x, status: 'awaiting_action', failed_reason: null } : x));
+                                                                    } catch { setApiError('Re-upload failed'); }
+                                                                }} />
                                                         </label>
                                                     )}
                                                 </td>
@@ -1131,245 +1210,32 @@ export default function KYCPage() {
                     )}
                 </main>
 
-                {/* ── DECENTRO IDENTITY VERIFICATION ─────────────────────────── */}
-                <SectionCard title="Identity Verification (Decentro)">
-                    <p className="text-xs text-gray-400 mb-6">Run real-time checks via Decentro's staging API before submitting for full verification.</p>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-
-                        {/* PAN Verification */}
-                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                <CreditCard className="w-4 h-4 text-[#0047AB]" /> PAN Verification
-                            </h4>
-                            <div className="flex gap-2">
-                                <input
-                                    value={panNumber}
-                                    onChange={e => { setPanNumber(e.target.value.toUpperCase().slice(0, 10)); setPanResult(null); }}
-                                    placeholder="ABCDE1234F"
-                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase"
-                                    maxLength={10}
-                                />
-                                <button
-                                    onClick={handlePanVerify}
-                                    disabled={panVerifying || panNumber.length !== 10}
-                                    className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
-                                >
-                                    {panVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />}
-                                    Verify
-                                </button>
-                            </div>
-                            {panResult && (
-                                <div className={`p-3 rounded-xl text-xs font-medium ${panResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                    {panResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                    {panResult.message}
-                                    {panResult.data?.name && <div className="mt-1 font-bold">Name: {panResult.data.name}</div>}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Aadhaar Verification */}
-                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                <Shield className="w-4 h-4 text-[#0047AB]" /> Aadhaar Verification (OTP)
-                            </h4>
-                            {aadhaarStep === 'input' ? (
-                                <div className="flex gap-2">
-                                    <input
-                                        value={aadhaarNumber}
-                                        onChange={e => { setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12)); setAadhaarResult(null); }}
-                                        placeholder="12-digit Aadhaar"
-                                        className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                                        maxLength={12}
-                                    />
-                                    <button
-                                        onClick={handleAadhaarSendOtp}
-                                        disabled={aadhaarVerifying || aadhaarNumber.length !== 12}
-                                        className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
-                                    >
-                                        {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                                        Send OTP
-                                    </button>
-                                </div>
-                            ) : (
-                                <div className="space-y-2">
-                                    <div className="flex gap-2">
-                                        <input
-                                            value={aadhaarOtp}
-                                            onChange={e => setAadhaarOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                                            placeholder="Enter 6-digit OTP"
-                                            className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                                            maxLength={6}
-                                        />
-                                        <button
-                                            onClick={handleAadhaarVerifyOtp}
-                                            disabled={aadhaarVerifying || aadhaarOtp.length !== 6}
-                                            className="px-4 py-2 bg-green-600 text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1"
-                                        >
-                                            {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
-                                            Verify OTP
-                                        </button>
-                                    </div>
-                                    <button onClick={() => { setAadhaarStep('input'); setAadhaarOtp(''); }} className="text-[10px] text-gray-400 hover:text-gray-600">
-                                        ← Change Aadhaar number
-                                    </button>
-                                </div>
-                            )}
-                            {aadhaarResult && (
-                                <div className={`p-3 rounded-xl text-xs font-medium ${aadhaarResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                    {aadhaarResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                    {aadhaarResult.message}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Bank Verification */}
-                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                <FileText className="w-4 h-4 text-[#0047AB]" /> Bank Account Verification
-                            </h4>
-                            <input
-                                value={bankAccountNo}
-                                onChange={e => { setBankAccountNo(e.target.value.replace(/\D/g, '')); setBankResult(null); }}
-                                placeholder="Account number"
-                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                            />
-                            <div className="flex gap-2">
-                                <input
-                                    value={bankIfsc}
-                                    onChange={e => setBankIfsc(e.target.value.toUpperCase().slice(0, 11))}
-                                    placeholder="IFSC (e.g. HDFC0001234)"
-                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase"
-                                    maxLength={11}
-                                />
-                                <input
-                                    value={bankName}
-                                    onChange={e => setBankName(e.target.value)}
-                                    placeholder="Account holder name (optional)"
-                                    className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                />
-                            </div>
-                            <button
-                                onClick={handleBankVerify}
-                                disabled={bankVerifying || !bankAccountNo || bankIfsc.length < 11}
-                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-                            >
-                                {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
-                                Verify Bank Account
+                {/* ═══════════════════════════════════════════════════════════
+                    STICKY FOOTER
+                   ═══════════════════════════════════════════════════════════ */}
+                <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg z-50">
+                    <div className="max-w-[1200px] mx-auto px-6 py-4 flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                            {lastSaved && <span className="text-xs text-gray-400">{lastSaved}</span>}
+                            <button onClick={() => handleSaveDraft(false)} disabled={saving}
+                                className="px-5 py-2.5 border-2 border-gray-200 rounded-xl text-sm font-bold text-gray-600 hover:bg-gray-50 disabled:opacity-40 flex items-center gap-2">
+                                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                                Save Draft
                             </button>
-                            {bankResult && (
-                                <div className={`p-3 rounded-xl text-xs font-medium ${bankResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                    {bankResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                    {bankResult.message}
-                                    {bankResult.data?.bankName && <div className="mt-1 font-bold">Bank: {bankResult.data.bankName}</div>}
-                                </div>
-                            )}
                         </div>
-
-                        {/* Document OCR */}
-                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                <Eye className="w-4 h-4 text-[#0047AB]" /> Document OCR Extraction
-                            </h4>
-                            <select
-                                value={ocrDocType}
-                                onChange={e => { setOcrDocType(e.target.value as any); setOcrResult(null); }}
-                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                            >
-                                <option value="PAN">PAN Card</option>
-                                <option value="AADHAAR">Aadhaar Card</option>
-                                <option value="DRIVING_LICENSE">Driving License</option>
-                                <option value="VOTERID">Voter ID</option>
-                            </select>
-                            <label className="flex items-center gap-2 px-4 py-2.5 border-2 border-dashed border-gray-200 rounded-xl text-xs font-bold cursor-pointer hover:border-[#0047AB] text-gray-500 bg-white">
-                                <Upload className="w-3.5 h-3.5" />
-                                {ocrFile ? ocrFile.name : 'Upload document (JPG/PNG/PDF, max 6MB)'}
-                                <input type="file" className="hidden" accept="image/jpeg,image/png,application/pdf" onChange={e => { setOcrFile(e.target.files?.[0] || null); setOcrResult(null); }} />
-                            </label>
-                            <button
-                                onClick={handleOcrExtract}
-                                disabled={ocrExtracting || !ocrFile}
-                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-                            >
-                                {ocrExtracting ? <Loader2 className="w-3 h-3 animate-spin" /> : <FileText className="w-3 h-3" />}
-                                Extract Data
+                        <div className="flex items-center gap-3">
+                            {!verificationSubmitted && (
+                                <button onClick={handleSubmitVerification}
+                                    disabled={submitting || docStats.uploaded < docStats.total || (isFinance && !feePaid)}
+                                    className="px-6 py-2.5 border-2 border-[#0047AB] text-[#0047AB] rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-blue-50 flex items-center gap-2">
+                                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
+                                    Submit Verification
+                                </button>
+                            )}
+                            <button onClick={handleSaveAndNext} disabled={saving}
+                                className="px-8 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] flex items-center gap-2">
+                                Save & Next <ArrowRight className="w-4 h-4" />
                             </button>
-                            {ocrResult && (
-                                <div className={`p-3 rounded-xl text-xs ${ocrResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                    {ocrResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                    {ocrResult.message}
-                                    {ocrResult.data && (
-                                        <pre className="mt-2 text-[10px] bg-white/60 p-2 rounded-lg overflow-x-auto">{JSON.stringify(ocrResult.data, null, 2)}</pre>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Face Match */}
-                        <div className="p-5 bg-gray-50 rounded-2xl space-y-3 md:col-span-2">
-                            <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                <Camera className="w-4 h-4 text-[#0047AB]" /> Face Match
-                                <span className="text-[10px] font-medium text-gray-400 ml-1">Compare selfie vs ID photo</span>
-                            </h4>
-                            <div className="grid grid-cols-2 gap-3">
-                                {([['faceImg1', faceImg1, setFaceImg1, 'Selfie / Live Photo'], ['faceImg2', faceImg2, setFaceImg2, 'ID Card Photo']] as const).map(([key, file, setter, label]) => (
-                                    <label key={key} className="flex flex-col items-center justify-center gap-2 px-4 py-6 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#0047AB] bg-white">
-                                        <Camera className="w-6 h-6 text-gray-300" />
-                                        <span className="text-xs font-bold text-gray-600 text-center">{label}</span>
-                                        {file && <span className="text-[10px] text-green-600 truncate max-w-[120px]">{(file as File).name}</span>}
-                                        <input type="file" className="hidden" accept="image/jpeg,image/png" onChange={e => { (setter as any)(e.target.files?.[0] || null); setFaceResult(null); }} />
-                                    </label>
-                                ))}
-                            </div>
-                            <button
-                                onClick={handleFaceMatch}
-                                disabled={faceMatching || !faceImg1 || !faceImg2}
-                                className="w-full py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center justify-center gap-2"
-                            >
-                                {faceMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Camera className="w-3 h-3" />}
-                                Match Faces
-                            </button>
-                            {faceResult && (
-                                <div className={`p-3 rounded-xl text-xs font-medium ${faceResult.success && faceResult.is_match ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                    {faceResult.is_match ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                    {faceResult.message}
-                                    {faceResult.match_score != null && (
-                                        <span className="ml-2 font-black">Match Score: {faceResult.match_score}%</span>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </SectionCard>
-
-                {/* BOTTOM BUTTONS */}
-                <div className="sticky bottom-0 left-0 right-0 bg-[#F8F9FB] pt-4 pb-8 z-50">
-                    <div className="max-w-[1200px] mx-auto px-6">
-                        <div className="flex justify-between items-center bg-white border border-gray-100 rounded-[20px] px-8 py-5 shadow-[0_-8px_30px_rgb(0,0,0,0.04)]">
-                            <div className="flex items-center gap-3">
-                                <div className="bg-gray-100 px-4 py-1.5 rounded-full">
-                                    <span className="text-[11px] font-bold text-gray-500 uppercase tracking-widest leading-none">{lastSaved || 'Not saved'}</span>
-                                </div>
-                            </div>
-                            <div className="flex gap-4">
-                                <button onClick={() => router.back()} className="px-8 py-2.5 border-2 border-[#EBEBEB] rounded-xl text-sm font-bold text-gray-700 hover:bg-gray-50 transition-colors">
-                                    Back
-                                </button>
-                                <button
-                                    onClick={() => handleSaveDraft(false)}
-                                    disabled={saving}
-                                    className="px-8 py-2.5 border-2 border-[#0047AB] rounded-xl text-sm font-bold text-[#0047AB] hover:bg-blue-50 transition-colors flex items-center gap-2"
-                                >
-                                    {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Save Draft
-                                </button>
-                                <button
-                                    onClick={handleSaveAndNext}
-                                    disabled={saving || docStats.uploaded < docStats.total}
-                                    className="px-10 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold hover:bg-[#003580] transition-all flex items-center gap-2 disabled:opacity-50"
-                                >
-                                    Save & Next <ChevronRight className="w-4 h-4" />
-                                </button>
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -1378,81 +1244,113 @@ export default function KYCPage() {
     );
 }
 
-// --- SUB-COMPONENTS ---
+// ── Sub-Components ───────────────────────────────────────────────────────────
 
-function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SectionCard({ title, icon, children, disabled, disabledMessage }: {
+    title: string; icon?: React.ReactNode; children: React.ReactNode;
+    disabled?: boolean; disabledMessage?: string;
+}) {
     return (
-        <div className="bg-white rounded-[24px] border border-[#E9ECEF] shadow-[0_8px_30px_rgb(0,0,0,0.02)]">
-            <div className="flex items-center gap-4 px-8 pt-8 pb-4">
-                <div className="w-[3px] h-6 bg-[#0047AB] rounded-full" />
-                <h3 className="text-lg font-black text-gray-900 tracking-tight">{title}</h3>
+        <div className={`bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden ${disabled ? 'opacity-50' : ''}`}>
+            <div className="px-6 py-4 border-b border-gray-50 flex items-center gap-3">
+                {icon}
+                <h3 className="text-base font-black text-gray-900">{title}</h3>
             </div>
-            <div className="p-8 pt-4">{children}</div>
+            <div className="px-6 py-5 relative">
+                {disabled && (
+                    <div className="absolute inset-0 bg-white/60 z-10 flex items-center justify-center">
+                        <div className="bg-gray-900 text-white px-4 py-2 rounded-lg text-sm font-bold">
+                            {disabledMessage || 'Section locked'}
+                        </div>
+                    </div>
+                )}
+                {children}
+            </div>
         </div>
     );
 }
 
-function DocumentCard({ label, required, uploaded, verificationStatus, failedReason, ocrFailed, onUpload, onManualEntry }: {
-    label: string;
-    required: boolean;
-    uploaded: boolean;
-    verificationStatus?: VerificationStatus;
-    failedReason?: string;
-    ocrFailed?: boolean;
-    onUpload: (file: File) => void;
-    onManualEntry?: () => void;
+function DocumentCard({ label, required, uploaded, verificationStatus, failedReason, ocrFailed, uploading, onUpload, onManualEntry }: {
+    label: string; required: boolean; uploaded: boolean;
+    verificationStatus?: VerificationStatus; failedReason?: string;
+    ocrFailed?: boolean; uploading?: boolean;
+    onUpload: (file: File) => void; onManualEntry: () => void;
 }) {
     return (
-        <div className={`relative flex flex-col items-center justify-center p-6 border-2 rounded-2xl transition-all min-h-[140px] ${uploaded
-            ? verificationStatus === 'failed'
-                ? 'border-red-200 bg-red-50'
-                : verificationStatus === 'success'
-                    ? 'border-green-200 bg-green-50'
-                    : 'border-blue-200 bg-blue-50'
-            : 'border-dashed border-gray-200 hover:border-[#0047AB] hover:bg-gray-50'
-            }`}>
-            <label className="flex flex-col items-center cursor-pointer w-full">
-                <input type="file" className="hidden" accept="image/png,image/jpeg,application/pdf" onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
+        <div className={`p-4 rounded-xl border-2 transition-all ${
+            uploaded && verificationStatus === 'in_progress' ? 'border-green-200 bg-green-50/50'
+                : uploaded && verificationStatus === 'failed' ? 'border-red-200 bg-red-50/50'
+                    : uploaded ? 'border-blue-200 bg-blue-50/50'
+                        : 'border-dashed border-gray-200 hover:border-[#0047AB]'
+        }`}>
+            <div className="flex items-start justify-between mb-3">
+                <span className="text-xs font-bold text-gray-900">{label}</span>
+                {required && <span className="text-[9px] font-bold text-red-500 uppercase">Required</span>}
+            </div>
 
-                {uploaded ? (
-                    <>
-                        {verificationStatus === 'success' && <CheckCircle2 className="w-8 h-8 text-green-500 mb-2" />}
-                        {verificationStatus === 'failed' && <XCircle className="w-8 h-8 text-red-500 mb-2" />}
-                        {verificationStatus === 'pending' && <Clock className="w-8 h-8 text-blue-500 mb-2" />}
-                        {verificationStatus === 'in_progress' && <Loader2 className="w-8 h-8 text-amber-500 mb-2 animate-spin" />}
-                    </>
-                ) : (
-                    <Upload className="w-8 h-8 text-gray-300 mb-2" />
-                )}
-
-                <span className="text-xs font-bold text-gray-700 text-center">{label}</span>
-                {required && !uploaded && <span className="text-[10px] text-red-400 font-medium mt-1">Required</span>}
-                {uploaded && !ocrFailed && <span className="text-[10px] text-green-600 font-medium mt-1">Uploaded</span>}
-            </label>
-
-            {failedReason && <span className="text-[10px] text-red-500 font-medium mt-1 text-center">{failedReason}</span>}
-
-            {ocrFailed && uploaded && onManualEntry && (
-                <button
-                    onClick={(e) => { e.stopPropagation(); onManualEntry(); }}
-                    className="mt-2 px-3 py-1 bg-amber-100 text-amber-700 rounded-lg text-[10px] font-bold hover:bg-amber-200 transition-colors"
-                >
-                    Enter Manually
-                </button>
+            {uploading ? (
+                <div className="flex flex-col items-center py-4">
+                    <Loader2 className="w-6 h-6 animate-spin text-[#0047AB] mb-2" />
+                    <span className="text-[10px] text-gray-400">Uploading...</span>
+                </div>
+            ) : uploaded ? (
+                <div className="space-y-2">
+                    <div className="flex items-center gap-1.5">
+                        {verificationStatus === 'in_progress' ? <CheckCircle2 className="w-4 h-4 text-green-500" />
+                            : verificationStatus === 'failed' ? <XCircle className="w-4 h-4 text-red-500" />
+                                : <Clock className="w-4 h-4 text-amber-500" />}
+                        <span className="text-[10px] font-bold text-gray-600 capitalize">{verificationStatus?.replace(/_/g, ' ')}</span>
+                    </div>
+                    {failedReason && <p className="text-[10px] text-red-500 line-clamp-2">{failedReason}</p>}
+                    <div className="flex gap-2">
+                        <label className="text-[10px] font-bold text-[#0047AB] cursor-pointer hover:underline flex items-center gap-0.5">
+                            <RefreshCw className="w-3 h-3" /> Re-upload
+                            <input type="file" className="hidden" accept="image/*,application/pdf" onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
+                        </label>
+                        {ocrFailed && (
+                            <button onClick={onManualEntry} className="text-[10px] font-bold text-amber-600 hover:underline flex items-center gap-0.5">
+                                <FileText className="w-3 h-3" /> Manual
+                            </button>
+                        )}
+                    </div>
+                </div>
+            ) : (
+                <label className="flex flex-col items-center py-4 cursor-pointer group">
+                    <Upload className="w-6 h-6 text-gray-300 group-hover:text-[#0047AB] transition-colors mb-2" />
+                    <span className="text-[10px] font-bold text-gray-400 group-hover:text-[#0047AB]">Click to upload</span>
+                    <span className="text-[9px] text-gray-300 mt-0.5">PNG, JPEG, PDF (max 5MB)</span>
+                    <input type="file" className="hidden" accept="image/*,application/pdf" onChange={e => e.target.files?.[0] && onUpload(e.target.files[0])} />
+                </label>
             )}
         </div>
     );
 }
 
 function StatusBadge({ status }: { status: VerificationStatus }) {
-    const config: Record<string, { bg: string; text: string; label: string }> = {
-        pending: { bg: 'bg-yellow-50', text: 'text-yellow-700', label: 'Pending' },
-        initiating: { bg: 'bg-orange-50', text: 'text-orange-700', label: 'Initiating' },
-        awaiting_action: { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Awaiting Action' },
-        in_progress: { bg: 'bg-blue-50', text: 'text-blue-700', label: 'In Progress' },
-        success: { bg: 'bg-green-50', text: 'text-green-700', label: 'Success' },
-        failed: { bg: 'bg-red-50', text: 'text-red-700', label: 'Failed' },
+    const cfg: Record<string, { bg: string; text: string; label: string }> = {
+        pending: { bg: 'bg-gray-100', text: 'text-gray-600', label: 'Pending' },
+        initiating: { bg: 'bg-blue-50', text: 'text-blue-600', label: 'Initiating' },
+        awaiting_action: { bg: 'bg-amber-50', text: 'text-amber-600', label: 'Awaiting' },
+        in_progress: { bg: 'bg-blue-50', text: 'text-blue-600', label: 'In Progress' },
+        success: { bg: 'bg-green-50', text: 'text-green-600', label: 'Success' },
+        failed: { bg: 'bg-red-50', text: 'text-red-600', label: 'Failed' },
     };
-    const c = config[status] || config.pending;
-    return <span className={`px-3 py-1 rounded-full text-xs font-bold ${c.bg} ${c.text}`}>{c.label}</span>;
+    const c = cfg[status] || cfg.pending;
+    return <span className={`px-3 py-1 rounded-full text-[10px] font-bold ${c.bg} ${c.text}`}>{c.label}</span>;
+}
+
+function InputField({ label, value, onChange, placeholder, type = 'text', maxLength, mono, upper }: {
+    label: string; value: string; onChange: (v: string) => void;
+    placeholder?: string; type?: string; maxLength?: number; mono?: boolean; upper?: boolean;
+}) {
+    return (
+        <div className="space-y-1">
+            <label className="text-xs font-bold text-gray-700">{label}</label>
+            <input
+                type={type} value={value} onChange={e => onChange(upper ? e.target.value.toUpperCase() : e.target.value)}
+                placeholder={placeholder} maxLength={maxLength}
+                className={`w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8] ${mono ? 'font-mono' : ''} ${upper ? 'uppercase' : ''}`}
+            />
+        </div>
+    );
 }

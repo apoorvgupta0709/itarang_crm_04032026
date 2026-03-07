@@ -4,7 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
     CheckCircle2, User, Loader2, Banknote, Filter,
-    UploadCloud, X, AlertCircle, Scan, Plus, Info,
+    X, AlertCircle, Scan, Plus, Info,
     Calendar, ChevronRight, Camera, Shield, ChevronLeft,
     Sparkles, HelpCircle, Save, ArrowRight
 } from 'lucide-react';
@@ -72,16 +72,6 @@ function NewLeadWizardContent() {
     const [showDraftPrompt, setShowDraftPrompt] = useState(false);
     const [hasDraft, setHasDraft] = useState(false);
 
-    // Facilitation Fee Payment State
-    const [showPayment, setShowPayment] = useState(false);
-    const [paymentData, setPaymentData] = useState({
-        payment_mode: '' as '' | 'upi' | 'neft' | 'rtgs' | 'cash',
-        transaction_id: '',
-        amount: '1500', // Default facilitation fee amount
-    });
-    const [paymentScreenshot, setPaymentScreenshot] = useState<File | null>(null);
-    const [paymentSubmitting, setPaymentSubmitting] = useState(false);
-    const [paymentComplete, setPaymentComplete] = useState(false);
 
     // 1) Initialize/Resume Draft
     const initDraft = async (fresh = false) => {
@@ -228,54 +218,12 @@ function NewLeadWizardContent() {
         setShowConfirm(true);
     };
 
-    // Handle facilitation fee payment
-    const handleFacilitationPayment = async () => {
-        if (!paymentData.payment_mode || !paymentData.transaction_id || !paymentData.amount) {
-            setApiError('Please fill all payment details');
-            return;
-        }
-        if (!leadId) {
-            setApiError('Lead must be created first');
-            return;
-        }
-
-        setPaymentSubmitting(true);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/facilitation-payment`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    payment_mode: paymentData.payment_mode,
-                    transaction_id: paymentData.transaction_id,
-                    amount: parseFloat(paymentData.amount),
-                }),
-            });
-            const result = await res.json();
-            if (result.success) {
-                setPaymentComplete(true);
-            } else {
-                setApiError(result.error?.message || 'Payment recording failed');
-            }
-        } catch {
-            setApiError('Failed to record payment. Please try again.');
-        } finally {
-            setPaymentSubmitting(false);
-        }
-    };
-
     const handleFinalConfirm = async () => {
         setShowConfirm(false);
         setLoading(true);
         // Auto-assign lead score based on interest level
         const leadScoreMap: Record<string, number> = { hot: 90, warm: 60, cold: 30 };
         const leadScore = leadScoreMap[formData.interest_level] || 30;
-
-        // Check if facilitation fee is required and paid
-        if (formData.payment_method === 'finance' && formData.interest_level === 'hot' && !paymentComplete) {
-            setLoading(false);
-            setShowPayment(true);
-            return;
-        }
 
         try {
             const res = await fetch('/api/leads/create', {
@@ -292,14 +240,15 @@ function NewLeadWizardContent() {
             const result = await res.json();
             if (result.success) {
                 const { leadId: updatedLeadId } = result.data;
-                // Upfront/Cash payment: skip KYC entirely
+                const isFinanceMethod = ['finance', 'other_finance', 'dealer_finance'].includes(formData.payment_method);
                 if (formData.payment_method === 'upfront') {
                     router.push(`/dealer-portal/leads`);
+                } else if (formData.interest_level === 'hot' && isFinanceMethod) {
+                    // Hot leads with finance: auto-navigate to Step 2 (KYC + Payment)
+                    router.push(`/dealer-portal/leads/${updatedLeadId}/kyc`);
                 } else if (formData.interest_level === 'hot') {
-                    // Hot leads with finance: auto-navigate to Step 2 (KYC)
                     router.push(`/dealer-portal/leads/${updatedLeadId}/kyc`);
                 } else {
-                    // Warm/Cold: save and exit workflow
                     router.push(`/dealer-portal/leads`);
                 }
             } else {
@@ -689,101 +638,7 @@ function NewLeadWizardContent() {
                                         )}
                                     </div>
 
-                                    {/* FACILITATION FEE PAYMENT (Finance only) */}
-                                    {formData.payment_method === 'finance' && (showPayment || paymentComplete) && (
-                                        <div className="mt-4 p-5 bg-white border-2 border-[#0047AB]/20 rounded-2xl space-y-4">
-                                            <div className="flex items-center justify-between">
-                                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2">
-                                                    <Banknote className="w-4 h-4 text-[#0047AB]" />
-                                                    Loan Facilitation Fee
-                                                </h4>
-                                                {paymentComplete && (
-                                                    <span className="px-3 py-1 rounded-full text-[10px] font-bold bg-green-100 text-green-700">
-                                                        <CheckCircle2 className="w-3 h-3 inline mr-1" /> Paid
-                                                    </span>
-                                                )}
-                                            </div>
-
-                                            {!paymentComplete ? (
-                                                <>
-                                                    <p className="text-xs text-gray-500">
-                                                        A facilitation fee is required for loan processing. Please collect payment and enter the details below.
-                                                    </p>
-
-                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                                        <div className="space-y-1">
-                                                            <label className="text-xs font-bold text-gray-700">Fee Amount (INR)</label>
-                                                            <input
-                                                                type="number"
-                                                                value={paymentData.amount}
-                                                                onChange={e => setPaymentData(p => ({ ...p, amount: e.target.value }))}
-                                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                                                                placeholder="1500"
-                                                            />
-                                                        </div>
-
-                                                        <div className="space-y-1">
-                                                            <label className="text-xs font-bold text-gray-700">Payment Mode *</label>
-                                                            <select
-                                                                value={paymentData.payment_mode}
-                                                                onChange={e => setPaymentData(p => ({ ...p, payment_mode: e.target.value as any }))}
-                                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                                            >
-                                                                <option value="">Select payment mode</option>
-                                                                <option value="upi">UPI</option>
-                                                                <option value="neft">NEFT</option>
-                                                                <option value="rtgs">RTGS</option>
-                                                                <option value="cash">Cash</option>
-                                                            </select>
-                                                        </div>
-
-                                                        <div className="space-y-1">
-                                                            <label className="text-xs font-bold text-gray-700">Transaction ID / UTR *</label>
-                                                            <input
-                                                                value={paymentData.transaction_id}
-                                                                onChange={e => setPaymentData(p => ({ ...p, transaction_id: e.target.value }))}
-                                                                className="w-full h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]"
-                                                                placeholder="Enter UTR / Transaction ID"
-                                                            />
-                                                        </div>
-
-                                                        <div className="space-y-1">
-                                                            <label className="text-xs font-bold text-gray-700">Payment Screenshot (optional)</label>
-                                                            <label className="flex items-center gap-2 h-10 px-3 bg-white border-2 border-dashed border-[#EBEBEB] rounded-xl text-xs font-medium cursor-pointer hover:border-[#1D4ED8] text-gray-500">
-                                                                <UploadCloud className="w-3.5 h-3.5" />
-                                                                {paymentScreenshot ? paymentScreenshot.name : 'Upload screenshot'}
-                                                                <input
-                                                                    type="file"
-                                                                    className="hidden"
-                                                                    accept="image/*"
-                                                                    onChange={e => setPaymentScreenshot(e.target.files?.[0] || null)}
-                                                                />
-                                                            </label>
-                                                        </div>
-                                                    </div>
-
-                                                    <button
-                                                        onClick={handleFacilitationPayment}
-                                                        disabled={paymentSubmitting || !paymentData.payment_mode || !paymentData.transaction_id}
-                                                        className="w-full py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all flex items-center justify-center gap-2"
-                                                    >
-                                                        {paymentSubmitting ? (
-                                                            <Loader2 className="w-4 h-4 animate-spin" />
-                                                        ) : (
-                                                            <Banknote className="w-4 h-4" />
-                                                        )}
-                                                        Confirm Payment & Proceed to KYC
-                                                    </button>
-                                                </>
-                                            ) : (
-                                                <div className="p-3 bg-green-50 rounded-xl text-xs text-green-700 font-medium">
-                                                    <CheckCircle2 className="w-4 h-4 inline mr-1" />
-                                                    Payment of INR {paymentData.amount} recorded successfully via {paymentData.payment_mode?.toUpperCase()}.
-                                                    Transaction ID: {paymentData.transaction_id}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
+                                    {/* Note: Facilitation fee payment is now handled on Step 2 (KYC page) */}
                                 </div>
                             </Card>
                         </>
