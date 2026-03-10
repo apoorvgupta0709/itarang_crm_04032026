@@ -51,3 +51,10 @@ export type BatteryAlert = InferSelectModel<typeof schema.batteryAlerts>;
 
 // Settings
 export type AppSetting = InferSelectModel<typeof schema.appSettings>;
+
+// Dealer Lead Scraper
+export type ScraperRun = InferSelectModel<typeof schema.scraperRuns>;
+export type NewScraperRun = InferInsertModel<typeof schema.scraperRuns>;
+export type ScrapedDealerLead = InferSelectModel<typeof schema.scrapedDealerLeads>;
+export type NewScrapedDealerLead = InferInsertModel<typeof schema.scrapedDealerLeads>;
+export type ScraperDedupLog = InferSelectModel<typeof schema.scraperDedupLogs>;

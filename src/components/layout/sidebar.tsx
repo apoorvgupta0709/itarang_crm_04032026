@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, ShoppingCart, Users, FileText, LogOut, Phone, PieChart, Package, FileCheck, Landmark, Briefcase, Building, Receipt, ClipboardCheck, Car, Battery, Wrench, CreditCard, Megaphone, Shield } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Users, FileText, LogOut, Phone, PieChart, Package, FileCheck, Landmark, Briefcase, Building, Receipt, ClipboardCheck, Car, Battery, Wrench, CreditCard, Megaphone, Shield, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const roleNavigation: Record<string, any[]> = {
@@ -40,6 +40,11 @@ const roleNavigation: Record<string, any[]> = {
             ]
         },
         {
+            section: 'DEALER PROSPECTING', items: [
+                { id: 'dealer-scraper', label: 'Dealer Scraper', icon: Search, href: '/sales-head/scraper' },
+            ]
+        },
+        {
             section: 'ADMIN', items: [
                 { id: 'kyc-review', label: 'KYC Review', icon: Shield, href: '/admin/kyc-review' },
             ]
@@ -52,6 +57,11 @@ const roleNavigation: Record<string, any[]> = {
                 { id: 'leads', label: 'My Leads', icon: Users, href: '/leads' },
                 { id: 'deals', label: 'My Deals', icon: FileCheck, href: '/deals' },
                 { id: 'ai-calls', label: 'AI Calls', icon: Phone, href: '/sales-manager/ai-calls' },
+            ]
+        },
+        {
+            section: 'DEALER PROSPECTING', items: [
+                { id: 'scraper-leads', label: 'Scraped Leads', icon: Search, href: '/sales-manager/scraper-leads' },
             ]
         },
     ],
