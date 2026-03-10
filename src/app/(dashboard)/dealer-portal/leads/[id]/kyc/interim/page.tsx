@@ -50,10 +50,7 @@ export default function InterimStepPage() {
     const [otherDocRequests, setOtherDocRequests] = useState<any[]>([]);
     const [otherDocsStatus, setOtherDocsStatus] = useState<string>('pending');
 
-    // Coupon & verification
-    const [couponCode, setCouponCode] = useState('');
-    const [couponValid, setCouponValid] = useState<boolean | null>(null);
-    const [verificationSubmitted, setVerificationSubmitted] = useState(false);
+    const [submitted, setSubmitted] = useState(false);
     const [submitting, setSubmitting] = useState(false);
 
     // OCR modal
@@ -168,23 +165,20 @@ export default function InterimStepPage() {
         } catch { setApiError('Failed to send consent'); }
     };
 
-    const handleSubmitCoBorrowerVerification = async () => {
+    const handleSubmitToSM = async () => {
         const requiredUploaded = CO_BORROWER_DOCS.filter(d => d.required).every(d => coBorrowerDocs[d.key]?.file_url);
         if (!requiredUploaded) { setApiError('Please upload all required co-borrower documents'); return; }
 
         setSubmitting(true);
         try {
-            const res = await fetch(`/api/coborrower/${leadId}/submit-verification`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ couponCode })
-            });
+            const res = await fetch(`/api/leads/${leadId}/submit-to-sm`, { method: 'POST' });
             const data = await res.json();
             if (data.success) {
-                setVerificationSubmitted(true);
-                setCoBorrowerVerifications(data.verifications || []);
+                setSubmitted(true);
+            } else {
+                setApiError(data.error?.message || 'Failed to submit');
             }
-        } catch { setApiError('Verification failed'); }
+        } catch { setApiError('Submission failed'); }
         finally { setSubmitting(false); }
     };
 
@@ -245,17 +239,17 @@ export default function InterimStepPage() {
                             <ChevronLeft className="w-6 h-6 text-gray-900" />
                         </button>
                         <div>
-                            <h1 className="text-[28px] font-black text-gray-900 leading-tight tracking-tight">Other Documents & Co-Borrower KYC</h1>
-                            <p className="text-sm text-gray-500 mt-0.5">Interim Step - Additional verification required</p>
+                            <h1 className="text-[28px] font-black text-gray-900 leading-tight tracking-tight">Co-Borrower KYC</h1>
+                            <p className="text-sm text-gray-500 mt-0.5">Step 3 — Upload co-borrower documents</p>
                         </div>
                     </div>
                     <div>
                         <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-right mb-1.5">Workflow Progress</p>
                         <div className="flex items-center gap-6">
-                            <span className="text-xs font-bold text-[#1D4ED8] whitespace-nowrap">Step 2 (Interim)</span>
+                            <span className="text-xs font-bold text-[#1D4ED8] whitespace-nowrap">Step 3 of 5</span>
                             <div className="flex gap-2.5">
                                 {[1, 2, 3, 4, 5].map(s => (
-                                    <div key={s} className={`h-[6px] w-[50px] rounded-full transition-all ${s <= 2 ? 'bg-[#0047AB]' : 'bg-gray-200'}`} />
+                                    <div key={s} className={`h-[6px] w-[50px] rounded-full transition-all ${s <= 3 ? 'bg-[#0047AB]' : 'bg-gray-200'}`} />
                                 ))}
                             </div>
                         </div>
@@ -352,46 +346,16 @@ export default function InterimStepPage() {
                         </SectionCard>
                     )}
 
-                    {/* CO-BORROWER VERIFICATION */}
-                    {hasCoBorrower && (
-                        <SectionCard title="Co-Borrower Verification">
-                            <div className="flex gap-4 mb-4">
-                                <input
-                                    value={couponCode}
-                                    onChange={e => setCouponCode(e.target.value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20))}
-                                    placeholder="Enter coupon code"
-                                    className="flex-1 h-11 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]"
-                                    maxLength={20}
-                                />
-                                <button onClick={handleSubmitCoBorrowerVerification} disabled={submitting || cobDocsUploaded < requiredCobDocs.length} className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2">
-                                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-                                    Submit for Verification
-                                </button>
-                            </div>
-
-                            {coBorrowerVerifications.length > 0 && (
-                                <table className="w-full text-sm mt-4">
-                                    <thead>
-                                        <tr className="border-b border-gray-100">
-                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Check</th>
-                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Status</th>
-                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Last Update</th>
-                                            <th className="text-left py-3 px-4 font-bold text-gray-500 text-xs uppercase">Failed Reason</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {coBorrowerVerifications.map((v: any) => (
-                                            <tr key={v.type} className="border-b border-gray-50">
-                                                <td className="py-3 px-4 font-medium">{v.label}</td>
-                                                <td className="py-3 px-4"><StatusBadge status={v.status} /></td>
-                                                <td className="py-3 px-4 text-xs text-gray-500">{v.last_update || '-'}</td>
-                                                <td className="py-3 px-4 text-xs text-red-500">{v.failed_reason || '-'}</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            )}
-                        </SectionCard>
+                    {/* SUBMIT TO SM */}
+                    {submitted && (
+                        <div className="p-8 bg-green-50 border border-green-200 rounded-2xl text-center">
+                            <CheckCircle2 className="w-12 h-12 text-green-600 mx-auto mb-3" />
+                            <p className="text-xl font-bold text-green-800">Submitted to Itarang Team</p>
+                            <p className="text-sm text-green-600 mt-2">Our sales manager will review all documents and get back to you with financing options.</p>
+                            <button onClick={() => router.push('/dealer-portal/leads')} className="mt-6 px-8 py-3 bg-[#0047AB] text-white rounded-xl font-bold text-sm hover:bg-[#003580]">
+                                Back to Leads
+                            </button>
+                        </div>
                     )}
 
                     {/* OTHER DOCUMENTATION */}
@@ -436,9 +400,12 @@ export default function InterimStepPage() {
                                 <button onClick={() => handleSaveDraft(false)} disabled={saving} className="px-8 py-2.5 border-2 border-[#0047AB] rounded-xl text-sm font-bold text-[#0047AB] hover:bg-blue-50 flex items-center gap-2">
                                     {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null} Save Draft
                                 </button>
-                                <button onClick={handlePreviewAndNext} disabled={saving} className="px-10 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold hover:bg-[#003580] flex items-center gap-2 disabled:opacity-50">
-                                    Preview Customer Profile <ChevronRight className="w-4 h-4" />
-                                </button>
+                                {!submitted && (
+                                    <button onClick={handleSubmitToSM} disabled={submitting || cobDocsUploaded < requiredCobDocs.length} className="px-10 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold hover:bg-[#003580] flex items-center gap-2 disabled:opacity-50">
+                                        {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ChevronRight className="w-4 h-4" />}
+                                        Submit to Itarang Team
+                                    </button>
+                                )}
                             </div>
                         </div>
                     </div>

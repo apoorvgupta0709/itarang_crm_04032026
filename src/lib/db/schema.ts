@@ -225,6 +225,11 @@ export const leads = pgTable('leads', {
     interim_step_status: varchar('interim_step_status', { length: 20 }), // pending, completed
     kyc_draft_data: jsonb('kyc_draft_data'), // Stores draft KYC form data
 
+    // SM Workflow
+    sm_review_status: varchar('sm_review_status', { length: 30 }).default('not_submitted'), // not_submitted, pending_sm_review, under_review, docs_verified, options_ready, option_booked
+    submitted_to_sm_at: timestamp('submitted_to_sm_at', { withTimezone: true }),
+    sm_assigned_to: uuid('sm_assigned_to').references(() => users.id),
+
     // Metadata
     uploader_id: uuid('uploader_id').references(() => users.id).notNull(),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -989,8 +994,35 @@ export const otherDocumentRequests = pgTable('other_document_requests', {
     reviewed_at: timestamp('reviewed_at', { withTimezone: true }),
     requested_by: uuid('requested_by').references(() => users.id).notNull(),
     uploaded_at: timestamp('uploaded_at', { withTimezone: true }),
+    upload_token: varchar('upload_token', { length: 255 }),
+    token_expires_at: timestamp('token_expires_at', { withTimezone: true }),
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
+
+// --- LOAN OFFERS (SM → Dealer) ---
+
+export const loanOffers = pgTable('loan_offers', {
+    id: varchar('id', { length: 255 }).primaryKey(), // OFFER-YYYYMMDD-SEQ
+    lead_id: varchar('lead_id', { length: 255 }).references(() => leads.id, { onDelete: 'cascade' }).notNull(),
+    financier_name: text('financier_name').notNull(),
+    loan_amount: decimal('loan_amount', { precision: 12, scale: 2 }).notNull(),
+    interest_rate: decimal('interest_rate', { precision: 5, scale: 2 }).notNull(), // % per annum
+    tenure_months: integer('tenure_months').notNull(),
+    emi: decimal('emi', { precision: 10, scale: 2 }).notNull(),
+    processing_fee: decimal('processing_fee', { precision: 10, scale: 2 }),
+    notes: text('notes'),
+    status: varchar('status', { length: 20 }).default('pending').notNull(), // pending, offered, selected, booked
+    created_by: uuid('created_by').references(() => users.id).notNull(),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    loanOffersLeadIdx: index('loan_offers_lead_id_idx').on(table.lead_id),
+}));
+
+export const loanOffersRelations = relations(loanOffers, ({ one }) => ({
+    lead: one(leads, { fields: [loanOffers.lead_id], references: [leads.id] }),
+    creator: one(users, { fields: [loanOffers.created_by], references: [users.id] }),
+}));
 
 // --- ADMIN KYC REVIEW ---
 
