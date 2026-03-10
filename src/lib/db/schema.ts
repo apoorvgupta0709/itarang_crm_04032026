@@ -1350,3 +1350,85 @@ export const appSettings = pgTable('app_settings', {
     value: jsonb('value').notNull(),
     updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 });
+
+// --- DEALER LEAD SCRAPER MODULE ---
+
+export const scraperRuns = pgTable('scraper_runs', {
+    id: varchar('id', { length: 255 }).primaryKey(),                      // SCRAPE-YYYYMMDD-SEQ
+    triggered_by: uuid('triggered_by').references(() => users.id).notNull(),
+    status: varchar('status', { length: 20 }).default('running').notNull(), // running, completed, failed, cancelled
+    started_at: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+    completed_at: timestamp('completed_at', { withTimezone: true }),
+    search_queries: jsonb('search_queries'),                               // string[] of queries used
+    total_found: integer('total_found').default(0),
+    new_leads_saved: integer('new_leads_saved').default(0),
+    duplicates_skipped: integer('duplicates_skipped').default(0),
+    error_message: text('error_message'),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    scraperRunsStatusIdx: index('scraper_runs_status_idx').on(table.status),
+    scraperRunsTriggeredByIdx: index('scraper_runs_triggered_by_idx').on(table.triggered_by),
+}));
+
+export const scrapedDealerLeads = pgTable('scraped_dealer_leads', {
+    id: varchar('id', { length: 255 }).primaryKey(),                      // SDL-YYYYMMDD-SEQ
+    scraper_run_id: varchar('scraper_run_id', { length: 255 }).references(() => scraperRuns.id).notNull(),
+    dealer_name: text('dealer_name').notNull(),
+    phone: varchar('phone', { length: 20 }),
+    location_city: varchar('location_city', { length: 100 }),
+    location_state: varchar('location_state', { length: 100 }),
+    source_url: text('source_url'),
+    raw_data: jsonb('raw_data'),                                          // full scraped payload for reference
+    // Assignment (Sales Head assigns to Sales Manager)
+    assigned_to: uuid('assigned_to').references(() => users.id),         // null = unassigned
+    assigned_by: uuid('assigned_by').references(() => users.id),
+    assigned_at: timestamp('assigned_at', { withTimezone: true }),
+    // Exploration workflow (Sales Manager drives this)
+    exploration_status: varchar('exploration_status', { length: 30 }).default('unassigned').notNull(),
+    // Values: unassigned, assigned, exploring, explored, not_interested
+    exploration_notes: text('exploration_notes'),
+    explored_at: timestamp('explored_at', { withTimezone: true }),
+    // Promotion to full CRM lead (optional)
+    converted_lead_id: varchar('converted_lead_id', { length: 255 }).references(() => leads.id),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    sdlPhoneIdx: index('sdl_phone_idx').on(table.phone),
+    sdlNameCityIdx: index('sdl_name_city_idx').on(table.dealer_name, table.location_city),
+    sdlSourceUrlIdx: index('sdl_source_url_idx').on(table.source_url),
+    sdlRunIdx: index('sdl_run_idx').on(table.scraper_run_id),
+    sdlAssignedToIdx: index('sdl_assigned_to_idx').on(table.assigned_to),
+    sdlStatusIdx: index('sdl_status_idx').on(table.exploration_status),
+}));
+
+export const scraperDedupLogs = pgTable('scraper_dedup_logs', {
+    id: varchar('id', { length: 255 }).primaryKey(),                      // DDUP-YYYYMMDD-SEQ
+    scraper_run_id: varchar('scraper_run_id', { length: 255 }).references(() => scraperRuns.id).notNull(),
+    raw_dealer_name: text('raw_dealer_name'),
+    raw_phone: varchar('raw_phone', { length: 20 }),
+    raw_location: text('raw_location'),
+    raw_source_url: text('raw_source_url'),
+    skip_reason: varchar('skip_reason', { length: 50 }).notNull(),        // duplicate_phone, duplicate_name_location, duplicate_url
+    matched_lead_id: varchar('matched_lead_id', { length: 255 }),        // existing SDL id that matched
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    ddupRunIdx: index('ddup_run_idx').on(table.scraper_run_id),
+}));
+
+// Relations for scraper tables
+export const scraperRunsRelations = relations(scraperRuns, ({ one, many }) => ({
+    triggeredBy: one(users, { fields: [scraperRuns.triggered_by], references: [users.id] }),
+    leads: many(scrapedDealerLeads),
+    dedupLogs: many(scraperDedupLogs),
+}));
+
+export const scrapedDealerLeadsRelations = relations(scrapedDealerLeads, ({ one }) => ({
+    scraperRun: one(scraperRuns, { fields: [scrapedDealerLeads.scraper_run_id], references: [scraperRuns.id] }),
+    assignedTo: one(users, { fields: [scrapedDealerLeads.assigned_to], references: [users.id] }),
+    assignedBy: one(users, { fields: [scrapedDealerLeads.assigned_by], references: [users.id] }),
+    convertedLead: one(leads, { fields: [scrapedDealerLeads.converted_lead_id], references: [leads.id] }),
+}));
+
+export const scraperDedupLogsRelations = relations(scraperDedupLogs, ({ one }) => ({
+    scraperRun: one(scraperRuns, { fields: [scraperDedupLogs.scraper_run_id], references: [scraperRuns.id] }),
+}));
