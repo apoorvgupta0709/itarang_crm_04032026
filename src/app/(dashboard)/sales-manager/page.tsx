@@ -1,6 +1,7 @@
 "use client";
 
 import React from 'react';
+import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { KPICard } from '@/components/shared/kpi-card';
 import { MetricsChart } from '@/components/shared/charts';
@@ -14,7 +15,8 @@ import {
     Target,
     ArrowRight,
     Loader2,
-    AlertCircle
+    AlertCircle,
+    ChevronRight
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -54,6 +56,56 @@ const dealData = [
     { status: 'On Hold', count: 3 },
 ];
 
+function PendingKycReviews() {
+    const router = useRouter();
+    const { data, isLoading } = useQuery({
+        queryKey: ['sm-pending-kyc'],
+        queryFn: async () => {
+            const res = await fetch('/api/sm/leads');
+            if (!res.ok) return { leads: [] };
+            const json = await res.json();
+            return json.data || { leads: [] };
+        },
+        refetchInterval: 30000,
+    });
+
+    const leads = data?.leads || [];
+    if (isLoading) return <div className="flex items-center justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-[#1D4ED8]" /></div>;
+
+    const statusColors: Record<string, string> = {
+        pending_sm_review: 'bg-amber-50 text-amber-700',
+        under_review: 'bg-blue-50 text-blue-700',
+        docs_verified: 'bg-green-50 text-green-700',
+        options_ready: 'bg-purple-50 text-purple-700',
+    };
+
+    if (leads.length === 0) {
+        return <p className="text-sm text-gray-400 text-center py-4">No leads pending review</p>;
+    }
+
+    return (
+        <div className="space-y-3">
+            {leads.map((lead: any) => (
+                <div key={lead.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-xl border border-gray-100 hover:border-gray-200 transition-colors">
+                    <div>
+                        <p className="text-sm font-bold text-gray-900">{lead.full_name || 'Unknown'}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{lead.reference_id} · {lead.phone}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${statusColors[lead.sm_review_status] || 'bg-gray-50 text-gray-500'}`}>
+                            {lead.sm_review_status.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                        </span>
+                        <button onClick={() => router.push(`/sales-manager/leads/${lead.id}/review`)}
+                            className="p-1.5 hover:bg-white rounded-lg border border-gray-200 transition-colors">
+                            <ChevronRight className="w-4 h-4 text-[#0047AB]" />
+                        </button>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
 export default function SalesManagerDashboard() {
     const { data: metrics, isLoading, error } = useQuery({
         queryKey: ['dashboard-metrics', 'sales_manager'],
@@ -91,6 +143,17 @@ export default function SalesManagerDashboard() {
             <div>
                 <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Sales Performance Dashboard</h1>
                 <p className="text-sm text-gray-500 mt-1">Track your leads, active deals, and conversion targets.</p>
+            </div>
+
+            {/* Pending KYC Reviews */}
+            <div className="bg-white rounded-2xl border border-amber-200 shadow-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                        <FileCheck className="w-4 h-4 text-amber-500" /> Pending KYC Reviews
+                    </h3>
+                    <span className="text-xs text-gray-400">Submitted by dealers</span>
+                </div>
+                <PendingKycReviews />
             </div>
 
             {/* KPI Section */}

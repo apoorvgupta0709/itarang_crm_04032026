@@ -5,8 +5,8 @@ import { useRouter, useParams } from 'next/navigation';
 import {
     ChevronLeft, Loader2, Upload, CheckCircle2, XCircle,
     AlertCircle, Clock, Info, X, FileText, Camera, Shield,
-    Send, Download, CreditCard, RefreshCw, Eye, ChevronRight,
-    QrCode, Tag, Timer, ArrowRight, Table2, Landmark
+    Send, Download, Eye, ChevronRight,
+    ArrowRight, Table2, Landmark, RefreshCw
 } from 'lucide-react';
 import { useAuth } from '@/components/auth/AuthProvider';
 
@@ -33,7 +33,6 @@ const UPFRONT_DOCUMENTS = [
 ];
 
 type VerificationStatus = 'pending' | 'initiating' | 'awaiting_action' | 'in_progress' | 'success' | 'failed';
-type PaymentStatus = 'UNPAID' | 'QR_GENERATED' | 'PAYMENT_PENDING_CONFIRMATION' | 'PAID' | 'FAILED' | 'EXPIRED';
 
 interface OcrComparisonField {
     field: string;
@@ -63,21 +62,6 @@ interface VerificationRow {
     failed_reason: string | null;
 }
 
-interface PaymentData {
-    payment_id: string;
-    qr_id: string;
-    qr_image_url: string;
-    qr_short_url: string;
-    qr_status: string;
-    expires_at: string;
-    base_amount: number;
-    discount_amount: number;
-    final_amount: number;
-    coupon_code: string | null;
-    facilitation_fee_status: PaymentStatus;
-    razorpay_payment_id?: string;
-}
-
 // ── Main Page ────────────────────────────────────────────────────────────────
 
 export default function KYCPage() {
@@ -91,21 +75,6 @@ export default function KYCPage() {
     const [lead, setLead] = useState<any>(null);
     const [accessDenied, setAccessDenied] = useState(false);
     const [apiError, setApiError] = useState<string | null>(null);
-
-    // Payment method (determined from lead)
-    const [paymentMethod, setPaymentMethod] = useState<string>('finance');
-    const isFinance = ['finance', 'other_finance', 'dealer_finance'].includes(paymentMethod);
-
-    // ── Payment State ──
-    const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>('UNPAID');
-    const [paymentData, setPaymentData] = useState<PaymentData | null>(null);
-    const [couponCode, setCouponCode] = useState('');
-    const [couponResult, setCouponResult] = useState<any>(null);
-    const [couponLoading, setCouponLoading] = useState(false);
-    const [generatingQr, setGeneratingQr] = useState(false);
-    const [regeneratingQr, setRegeneratingQr] = useState(false);
-    const [paymentPolling, setPaymentPolling] = useState(false);
-    const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
     // ── Document Upload State ──
     const [uploadedDocs, setUploadedDocs] = useState<Record<string, DocUpload>>({});
@@ -131,27 +100,12 @@ export default function KYCPage() {
     const [verificationSubmitted, setVerificationSubmitted] = useState(false);
     const [submitting, setSubmitting] = useState(false);
 
-    // ── Decentro Inline Verification ──
-    const [panNumber, setPanNumber] = useState('');
-    const [panVerifying, setPanVerifying] = useState(false);
-    const [panResult, setPanResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
-    const [aadhaarNumber, setAadhaarNumber] = useState('');
-    const [aadhaarTxnId, setAadhaarTxnId] = useState('');
-    const [aadhaarOtp, setAadhaarOtp] = useState('');
-    const [aadhaarStep, setAadhaarStep] = useState<'input' | 'otp'>('input');
-    const [aadhaarVerifying, setAadhaarVerifying] = useState(false);
-    const [aadhaarResult, setAadhaarResult] = useState<{ success: boolean; message: string } | null>(null);
-    const [bankAccountNo, setBankAccountNo] = useState('');
-    const [bankIfsc, setBankIfsc] = useState('');
-    const [bankName, setBankName] = useState('');
-    const [bankVerifying, setBankVerifying] = useState(false);
-    const [bankResult, setBankResult] = useState<{ success: boolean; message: string; data?: any } | null>(null);
-    const [faceMatching, setFaceMatching] = useState(false);
-    const [faceResult, setFaceResult] = useState<{ success: boolean; message: string; match_score?: number; is_match?: boolean } | null>(null);
-
     // ── Draft & Save ──
     const [saving, setSaving] = useState(false);
     const [lastSaved, setLastSaved] = useState<string | null>(null);
+
+    // ── Submit State ──
+    const [submitted, setSubmitted] = useState(false);
 
     // ── Load Data ────────────────────────────────────────────────────────────
 
@@ -163,18 +117,16 @@ export default function KYCPage() {
                 if (!data.success || !data.allowed) { setAccessDenied(true); return; }
 
                 setLead(data.lead);
-                if (data.lead.payment_method) setPaymentMethod(data.lead.payment_method);
                 if (data.lead.consent_status) setConsentStatus(data.lead.consent_status);
 
-                // Load docs, verifications, and payment status in parallel
-                const [docsRes, verRes, payRes] = await Promise.all([
+                // Load docs and verifications in parallel
+                const [docsRes, verRes] = await Promise.all([
                     fetch(`/api/kyc/${leadId}/documents`),
                     fetch(`/api/kyc/${leadId}/verifications`),
-                    fetch(`/api/kyc/${leadId}/payment-status`),
                 ]);
 
-                const [docsData, verData, payData] = await Promise.all([
-                    docsRes.json(), verRes.json(), payRes.json(),
+                const [docsData, verData] = await Promise.all([
+                    docsRes.json(), verRes.json(),
                 ]);
 
                 if (docsData.success) {
@@ -192,55 +144,11 @@ export default function KYCPage() {
 
                 if (verData.success) setVerifications(verData.data);
 
-                if (payData.success && payData.data) {
-                    setPaymentStatus(payData.status || 'UNPAID');
-                    setPaymentData({
-                        payment_id: payData.data.id,
-                        qr_id: payData.data.razorpay_qr_id || '',
-                        qr_image_url: payData.data.razorpay_qr_image_url || '',
-                        qr_short_url: payData.data.razorpay_qr_short_url || '',
-                        qr_status: payData.data.razorpay_qr_status || '',
-                        expires_at: payData.data.razorpay_qr_expires_at || '',
-                        base_amount: Number(payData.data.facilitation_fee_base_amount) || 1500,
-                        discount_amount: Number(payData.data.coupon_discount_amount) || 0,
-                        final_amount: Number(payData.data.facilitation_fee_final_amount) || 1500,
-                        coupon_code: payData.data.coupon_code,
-                        facilitation_fee_status: payData.status,
-                        razorpay_payment_id: payData.data.razorpay_payment_id,
-                    });
-                }
             } catch { setApiError('Failed to load KYC data'); }
             finally { setLoading(false); }
         };
         loadData();
     }, [leadId]);
-
-    // ── Payment polling (every 5s when QR is active) ──
-    useEffect(() => {
-        if (paymentStatus !== 'QR_GENERATED') {
-            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-            return;
-        }
-
-        pollIntervalRef.current = setInterval(async () => {
-            try {
-                const res = await fetch(`/api/kyc/${leadId}/payment-status`);
-                const data = await res.json();
-                if (data.success) {
-                    setPaymentStatus(data.status);
-                    if (data.status === 'PAID' && data.data) {
-                        setPaymentData(prev => prev ? { ...prev, facilitation_fee_status: 'PAID', razorpay_payment_id: data.data.razorpay_payment_id } : prev);
-                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                    }
-                    if (data.status === 'EXPIRED') {
-                        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                    }
-                }
-            } catch { /* silent */ }
-        }, 5000);
-
-        return () => { if (pollIntervalRef.current) clearInterval(pollIntervalRef.current); };
-    }, [paymentStatus, leadId]);
 
     // ── Auto-save draft every 2 min ──
     useEffect(() => {
@@ -248,11 +156,12 @@ export default function KYCPage() {
             if (Object.keys(uploadedDocs).length > 0) handleSaveDraft(true);
         }, 120000);
         return () => clearInterval(interval);
-    }, [uploadedDocs, paymentMethod, consentStatus]);
+    }, [uploadedDocs, consentStatus]);
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     const getRequiredDocs = () => {
+        const isFinance = lead && ['finance', 'other_finance', 'dealer_finance'].includes(lead.payment_method);
         if (!isFinance) return UPFRONT_DOCUMENTS;
         const docs = [...FINANCE_DOCUMENTS];
         const isVehicle = lead && ['2W', '3W', '4W'].includes(lead.asset_model);
@@ -264,77 +173,6 @@ export default function KYCPage() {
         const uploaded = required.filter(d => uploadedDocs[d.key]?.file_url);
         const pending = required.filter(d => !uploadedDocs[d.key]?.file_url);
         return { total: required.length, uploaded: uploaded.length, pending };
-    };
-
-    const feePaid = paymentStatus === 'PAID';
-    const documentsGated = isFinance && !feePaid;
-
-    // ── Payment Handlers ─────────────────────────────────────────────────────
-
-    const handleValidateCoupon = async () => {
-        if (!couponCode.trim()) return;
-        setCouponLoading(true);
-        setCouponResult(null);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/validate-coupon`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ couponCode: couponCode.trim() }),
-            });
-            const data = await res.json();
-            setCouponResult(data);
-        } catch {
-            setCouponResult({ valid: false, message: 'Network error' });
-        } finally {
-            setCouponLoading(false);
-        }
-    };
-
-    const handleGenerateQr = async () => {
-        setGeneratingQr(true);
-        setApiError(null);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/create-payment-qr`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    coupon_code: couponResult?.valid ? couponResult.coupon_code : null,
-                    coupon_id: couponResult?.valid ? couponResult.coupon_id : null,
-                }),
-            });
-            const data = await res.json();
-            if (data.success) {
-                setPaymentData(data.data);
-                setPaymentStatus('QR_GENERATED');
-            } else {
-                setApiError(data.error?.message || 'Failed to generate QR');
-            }
-        } catch {
-            setApiError('Failed to generate payment QR');
-        } finally {
-            setGeneratingQr(false);
-        }
-    };
-
-    const handleRegenerateQr = async () => {
-        setRegeneratingQr(true);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/regenerate-payment-qr`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-            });
-            const data = await res.json();
-            if (data.success) {
-                setPaymentData(prev => prev ? { ...prev, ...data.data, facilitation_fee_status: 'QR_GENERATED' } : data.data);
-                setPaymentStatus('QR_GENERATED');
-            } else {
-                setApiError(data.error?.message || 'Failed to regenerate QR');
-            }
-        } catch {
-            setApiError('Failed to regenerate QR');
-        } finally {
-            setRegeneratingQr(false);
-        }
     };
 
     // ── Document Upload ──────────────────────────────────────────────────────
@@ -373,18 +211,6 @@ export default function KYCPage() {
                 if (data.warning) setApiError(data.warning);
                 if (data.ocr_failed || data.enable_manual_entry) setManualEntryDoc(docType);
 
-                // Auto face match
-                if (docType === 'passport_photo' || docType === 'aadhaar_front') {
-                    const otherDoc = docType === 'passport_photo' ? 'aadhaar_front' : 'passport_photo';
-                    const otherUpload = uploadedDocs[otherDoc];
-                    if (otherUpload?.file_url) {
-                        triggerAutoFaceMatch(
-                            docType === 'passport_photo' ? data.file_url : otherUpload.file_url,
-                            docType === 'aadhaar_front' ? data.file_url : otherUpload.file_url
-                        );
-                    }
-                }
-
                 // Auto address match
                 if (docType === 'aadhaar_back' && data.ocr_data?.address) {
                     triggerAutoAddressMatch(data.ocr_data.address);
@@ -397,21 +223,6 @@ export default function KYCPage() {
             setUploadedDocs(prev => ({ ...prev, [docType]: { key: docType, file_url: null, verification_status: 'failed', failed_reason: 'Upload failed' } }));
             setApiError('Upload failed. Please try again.');
         }
-    };
-
-    const triggerAutoFaceMatch = async (passportUrl: string, aadhaarUrl: string) => {
-        try {
-            const [img1Res, img2Res] = await Promise.all([fetch(passportUrl), fetch(aadhaarUrl)]);
-            const [img1Blob, img2Blob] = await Promise.all([img1Res.blob(), img2Res.blob()]);
-            const form = new FormData();
-            form.append('image1', new File([img1Blob], 'passport.jpg', { type: 'image/jpeg' }));
-            form.append('image2', new File([img2Blob], 'aadhaar.jpg', { type: 'image/jpeg' }));
-            setFaceMatching(true);
-            const res = await fetch(`/api/kyc/${leadId}/decentro/face-match`, { method: 'POST', body: form });
-            const data = await res.json();
-            setFaceResult({ success: data.success, message: data.message, match_score: data.match_score, is_match: data.is_match });
-        } catch { /* silent */ }
-        finally { setFaceMatching(false); }
     };
 
     const triggerAutoAddressMatch = (aadhaarAddress: string) => {
@@ -442,7 +253,7 @@ export default function KYCPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     step: 2,
-                    data: { manualOcrData: { [manualEntryDoc]: manualFields }, paymentMethod, documents: uploadedDocs, consentStatus },
+                    data: { manualOcrData: { [manualEntryDoc]: manualFields }, documents: uploadedDocs, consentStatus },
                 }),
             });
             if (res.ok) {
@@ -481,7 +292,7 @@ export default function KYCPage() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     step: 2,
-                    data: { bankManualData: bankManualFields, paymentMethod, documents: uploadedDocs, consentStatus },
+                    data: { bankManualData: bankManualFields, documents: uploadedDocs, consentStatus },
                 }),
             });
             if (res.ok) {
@@ -600,108 +411,31 @@ export default function KYCPage() {
         } catch { setApiError('Failed to generate PDF'); }
     };
 
-    // ── Decentro Verification Handlers ───────────────────────────────────────
-
-    const handlePanVerify = async () => {
-        if (!panNumber.trim()) return;
-        setPanVerifying(true); setPanResult(null);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/decentro/pan`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ pan_number: panNumber.trim() }),
-            });
-            const data = await res.json();
-            setPanResult({ success: data.success, message: data.message, data: data.data });
-            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
-            const verData = await verRes.json();
-            if (verData.success) setVerifications(verData.data);
-        } catch { setPanResult({ success: false, message: 'Request failed' }); }
-        finally { setPanVerifying(false); }
-    };
-
-    const handleAadhaarSendOtp = async () => {
-        if (!aadhaarNumber.trim()) return;
-        setAadhaarVerifying(true); setAadhaarResult(null);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-otp`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ aadhaar_number: aadhaarNumber.trim() }),
-            });
-            const data = await res.json();
-            if (data.success && data.decentroTxnId) {
-                setAadhaarTxnId(data.decentroTxnId); setAadhaarStep('otp');
-                setAadhaarResult({ success: true, message: 'OTP sent to Aadhaar-linked mobile' });
-            } else { setAadhaarResult({ success: false, message: data.message || 'Failed to send OTP' }); }
-        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
-        finally { setAadhaarVerifying(false); }
-    };
-
-    const handleAadhaarVerifyOtp = async () => {
-        if (!aadhaarOtp.trim() || !aadhaarTxnId) return;
-        setAadhaarVerifying(true);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/decentro/aadhaar-verify`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ decentro_txn_id: aadhaarTxnId, otp: aadhaarOtp.trim() }),
-            });
-            const data = await res.json();
-            setAadhaarResult({ success: data.success, message: data.message });
-            if (data.success) {
-                setAadhaarStep('input');
-                const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
-                const verData = await verRes.json();
-                if (verData.success) setVerifications(verData.data);
-            }
-        } catch { setAadhaarResult({ success: false, message: 'Request failed' }); }
-        finally { setAadhaarVerifying(false); }
-    };
-
-    const handleBankVerify = async () => {
-        if (!bankAccountNo.trim() || !bankIfsc.trim()) return;
-        setBankVerifying(true); setBankResult(null);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/decentro/bank`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ account_number: bankAccountNo.trim(), ifsc: bankIfsc.trim(), name: bankName.trim() || undefined, perform_name_match: !!bankName.trim() }),
-            });
-            const data = await res.json();
-            setBankResult({ success: data.success, message: data.message, data: data.data });
-            const verRes = await fetch(`/api/kyc/${leadId}/verifications`);
-            const verData = await verRes.json();
-            if (verData.success) setVerifications(verData.data);
-        } catch { setBankResult({ success: false, message: 'Request failed' }); }
-        finally { setBankVerifying(false); }
-    };
-
     // ── Submit & Save ────────────────────────────────────────────────────────
-
-    const handleSubmitVerification = async () => {
-        const stats = getDocStats();
-        if (stats.uploaded < stats.total) { setApiError(`Upload all documents (${stats.uploaded}/${stats.total})`); return; }
-        if (isFinance && !feePaid) { setApiError('Facilitation fee payment is required'); return; }
-
-        setSubmitting(true);
-        try {
-            const res = await fetch(`/api/kyc/${leadId}/submit-verification`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ couponCode }),
-            });
-            const data = await res.json();
-            if (data.success) { setVerificationSubmitted(true); setVerifications(data.verifications || []); }
-            else { setApiError(data.error?.message || 'Verification submission failed'); }
-        } catch { setApiError('Failed to submit verification'); }
-        finally { setSubmitting(false); }
-    };
 
     const handleSaveDraft = async (auto = false) => {
         setSaving(true);
         try {
             await fetch(`/api/kyc/${leadId}/save-draft`, {
                 method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ step: 2, data: { paymentMethod, documents: uploadedDocs, consentStatus } }),
+                body: JSON.stringify({ step: 2, data: { documents: uploadedDocs, consentStatus } }),
             });
             setLastSaved(auto ? `Auto-saved at ${new Date().toLocaleTimeString()}` : `Saved at ${new Date().toLocaleTimeString()}`);
         } catch { /* silent */ }
+        finally { setSaving(false); }
+    };
+
+    const handleSubmitToSM = async () => {
+        setSaving(true);
+        try {
+            const res = await fetch(`/api/leads/${leadId}/submit-to-sm`, { method: 'POST' });
+            const data = await res.json();
+            if (data.success) {
+                setSubmitted(true);
+            } else {
+                setApiError(data.error?.message || 'Failed to submit');
+            }
+        } catch { setApiError('Connection failed'); }
         finally { setSaving(false); }
     };
 
@@ -718,12 +452,15 @@ export default function KYCPage() {
         try {
             const res = await fetch(`/api/kyc/${leadId}/complete-and-next`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ paymentMethod }),
+                body: JSON.stringify({}),
             });
             const data = await res.json();
             if (data.success) {
-                if (data.requiresInterim) router.push(`/dealer-portal/leads/${leadId}/kyc/interim`);
-                else router.push(`/dealer-portal/leads/${leadId}`);
+                if (lead?.has_co_borrower) {
+                    router.push(`/dealer-portal/leads/${leadId}/kyc/interim`);
+                } else {
+                    await handleSubmitToSM();
+                }
             } else { setApiError(data.error?.message || 'Failed to proceed'); }
         } catch { setApiError('Connection failed'); }
         finally { setSaving(false); }
@@ -764,16 +501,6 @@ export default function KYCPage() {
                         </div>
                     </div>
                     <div className="flex items-center gap-6">
-                        {/* Payment Status Badge */}
-                        {isFinance && (
-                            <div className={`px-4 py-2 rounded-full text-xs font-bold ${
-                                feePaid ? 'bg-green-50 text-green-700 border border-green-200'
-                                    : paymentStatus === 'QR_GENERATED' ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                        : 'bg-gray-50 text-gray-500 border border-gray-200'
-                            }`}>
-                                Fee: {paymentStatus.replace(/_/g, ' ')}
-                            </div>
-                        )}
                         <div>
                             <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest text-right mb-1.5">Workflow Progress</p>
                             <div className="flex items-center gap-6">
@@ -791,10 +518,8 @@ export default function KYCPage() {
                 {/* Step 2 Sub-Progress */}
                 <div className="mb-6 flex items-center gap-2 overflow-x-auto pb-1">
                     {[
-                        { label: 'Payment', done: !isFinance || feePaid, active: isFinance && !feePaid },
-                        { label: 'Documents', done: docStats.uploaded === docStats.total, active: (!isFinance || feePaid) && docStats.uploaded < docStats.total },
-                        { label: 'Verification', done: verifications.some(v => v.status === 'success'), active: docStats.uploaded === docStats.total && !verifications.some(v => v.status === 'success') },
-                        { label: 'Consent', done: ['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus), active: false },
+                        { label: 'Documents', done: docStats.uploaded === docStats.total, active: docStats.uploaded < docStats.total },
+                        { label: 'Consent', done: ['digitally_signed', 'manual_uploaded', 'verified'].includes(consentStatus), active: docStats.uploaded === docStats.total },
                         { label: 'Review', done: false, active: false },
                     ].map((s, i) => (
                         <div key={s.label} className="flex items-center gap-2">
@@ -822,192 +547,24 @@ export default function KYCPage() {
                     </div>
                 )}
 
+                {/* Submitted Banner */}
+                {submitted && (
+                    <div className="mb-6 bg-green-50 border border-green-200 p-6 rounded-xl text-center">
+                        <CheckCircle2 className="w-10 h-10 text-green-600 mx-auto mb-3" />
+                        <p className="text-lg font-bold text-green-800">Submitted to Itarang Team</p>
+                        <p className="text-sm text-green-600 mt-1">Our sales manager will review your documents and get back to you.</p>
+                        <button onClick={() => router.push('/dealer-portal/leads')} className="mt-4 px-6 py-2 bg-[#0047AB] text-white rounded-xl font-bold text-sm">Back to Leads</button>
+                    </div>
+                )}
+
                 <main className="grid grid-cols-1 gap-6">
 
                     {/* ═══════════════════════════════════════════════════════════
-                        SECTION 1: FACILITATION FEE PAYMENT (Finance leads only)
-                       ═══════════════════════════════════════════════════════════ */}
-                    {isFinance && (
-                        <SectionCard title="Facilitation Fee Payment" icon={<CreditCard className="w-5 h-5 text-[#0047AB]" />}>
-                            {feePaid ? (
-                                /* ── PAID State ── */
-                                <div className="p-6 bg-green-50 border border-green-200 rounded-xl">
-                                    <div className="flex items-center gap-3">
-                                        <CheckCircle2 className="w-8 h-8 text-green-600" />
-                                        <div>
-                                            <p className="text-lg font-bold text-green-800">Payment Received</p>
-                                            <p className="text-sm text-green-600">
-                                                Amount: <span className="font-bold">&#8377;{paymentData?.final_amount}</span>
-                                                {paymentData?.razorpay_payment_id && <span className="ml-3 font-mono text-xs">Ref: {paymentData.razorpay_payment_id}</span>}
-                                            </p>
-                                            {paymentData?.coupon_code && (
-                                                <p className="text-xs text-green-500 mt-1">Coupon applied: {paymentData.coupon_code} (saved &#8377;{paymentData.discount_amount})</p>
-                                            )}
-                                        </div>
-                                    </div>
-                                </div>
-                            ) : paymentStatus === 'QR_GENERATED' && paymentData ? (
-                                /* ── QR Active State ── */
-                                <div className="space-y-6">
-                                    <div className="flex flex-col md:flex-row gap-8">
-                                        {/* QR Code */}
-                                        <div className="flex flex-col items-center">
-                                            <div className="bg-white p-4 rounded-2xl border-2 border-gray-100 shadow-sm">
-                                                {paymentData.qr_image_url ? (
-                                                    <img src={paymentData.qr_image_url} alt="Payment QR" className="w-[220px] h-[220px] object-contain" />
-                                                ) : (
-                                                    <div className="w-[220px] h-[220px] flex items-center justify-center bg-gray-50 rounded-xl">
-                                                        <QrCode className="w-16 h-16 text-gray-300" />
-                                                    </div>
-                                                )}
-                                            </div>
-                                            <p className="text-xs text-gray-400 mt-3 text-center">Scan with any UPI app</p>
-                                            {paymentData.qr_short_url && (
-                                                <a href={paymentData.qr_short_url} target="_blank" rel="noopener noreferrer"
-                                                    className="text-xs text-[#0047AB] font-medium mt-1 hover:underline">
-                                                    Open UPI link
-                                                </a>
-                                            )}
-                                        </div>
-
-                                        {/* Payment Details */}
-                                        <div className="flex-1 space-y-4">
-                                            <div className="p-4 bg-gray-50 rounded-xl space-y-3">
-                                                <div className="flex justify-between text-sm">
-                                                    <span className="text-gray-500">Base Amount</span>
-                                                    <span className="font-bold text-gray-900">&#8377;{paymentData.base_amount}</span>
-                                                </div>
-                                                {paymentData.discount_amount > 0 && (
-                                                    <div className="flex justify-between text-sm">
-                                                        <span className="text-green-600 flex items-center gap-1"><Tag className="w-3 h-3" /> Discount {paymentData.coupon_code && `(${paymentData.coupon_code})`}</span>
-                                                        <span className="font-bold text-green-600">-&#8377;{paymentData.discount_amount}</span>
-                                                    </div>
-                                                )}
-                                                <div className="border-t border-gray-200 pt-3 flex justify-between text-sm">
-                                                    <span className="font-bold text-gray-900">Amount to Pay</span>
-                                                    <span className="text-xl font-black text-[#0047AB]">&#8377;{paymentData.final_amount}</span>
-                                                </div>
-                                            </div>
-
-                                            {/* Expiry timer */}
-                                            {paymentData.expires_at && (
-                                                <div className="flex items-center gap-2 text-xs text-amber-600">
-                                                    <Timer className="w-4 h-4" />
-                                                    QR expires at {new Date(paymentData.expires_at).toLocaleTimeString()}
-                                                </div>
-                                            )}
-
-                                            {/* Waiting indicator */}
-                                            <div className="flex items-center gap-3 p-4 bg-blue-50 border border-blue-200 rounded-xl">
-                                                <Loader2 className="w-5 h-5 animate-spin text-[#0047AB]" />
-                                                <div>
-                                                    <p className="text-sm font-bold text-[#0047AB]">Waiting for payment...</p>
-                                                    <p className="text-xs text-blue-500">Payment will be detected automatically</p>
-                                                </div>
-                                            </div>
-
-                                            {/* Regenerate QR */}
-                                            <button
-                                                onClick={handleRegenerateQr}
-                                                disabled={regeneratingQr}
-                                                className="text-xs text-gray-500 hover:text-[#0047AB] flex items-center gap-1 transition-colors"
-                                            >
-                                                {regeneratingQr ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
-                                                QR expired? Generate new one
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            ) : paymentStatus === 'EXPIRED' ? (
-                                /* ── Expired State ── */
-                                <div className="space-y-4">
-                                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-3">
-                                        <Clock className="w-6 h-6 text-amber-600" />
-                                        <div>
-                                            <p className="text-sm font-bold text-amber-800">Payment QR has expired</p>
-                                            <p className="text-xs text-amber-600">Click below to generate a new QR code</p>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={handleRegenerateQr}
-                                        disabled={regeneratingQr}
-                                        className="px-6 py-3 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex items-center gap-2"
-                                    >
-                                        {regeneratingQr ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                                        Generate New QR Code
-                                    </button>
-                                </div>
-                            ) : (
-                                /* ── UNPAID State: Coupon + Generate QR ── */
-                                <div className="space-y-6">
-                                    <p className="text-sm text-gray-500">
-                                        A facilitation fee is required for finance leads. Apply a coupon code if available, then generate a UPI QR code for payment.
-                                    </p>
-
-                                    {/* Coupon Input */}
-                                    <div className="p-5 bg-gray-50 rounded-xl space-y-4">
-                                        <h4 className="text-sm font-bold text-gray-900 flex items-center gap-2">
-                                            <Tag className="w-4 h-4 text-[#0047AB]" /> Apply Coupon (Optional)
-                                        </h4>
-                                        <div className="flex gap-3">
-                                            <input
-                                                value={couponCode}
-                                                onChange={e => { setCouponCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20)); setCouponResult(null); }}
-                                                placeholder="Enter coupon code"
-                                                className="flex-1 h-11 px-4 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]"
-                                                maxLength={20}
-                                            />
-                                            <button
-                                                onClick={handleValidateCoupon}
-                                                disabled={!couponCode.trim() || couponLoading}
-                                                className="px-6 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all"
-                                            >
-                                                {couponLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Apply'}
-                                            </button>
-                                        </div>
-                                        {couponResult?.valid && (
-                                            <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-sm">
-                                                <div className="flex items-center gap-2 text-green-700 font-bold">
-                                                    <CheckCircle2 className="w-4 h-4" /> {couponResult.message}
-                                                </div>
-                                                <div className="flex justify-between mt-2 text-xs text-green-600">
-                                                    <span>Base: &#8377;{couponResult.base_amount}</span>
-                                                    <span>Discount: -&#8377;{couponResult.discount_amount}</span>
-                                                    <span className="font-bold">Pay: &#8377;{couponResult.final_amount}</span>
-                                                </div>
-                                            </div>
-                                        )}
-                                        {couponResult && !couponResult.valid && (
-                                            <p className="text-xs font-bold text-red-500 flex items-center gap-1"><XCircle className="w-3 h-3" /> {couponResult.message}</p>
-                                        )}
-                                    </div>
-
-                                    {/* Generate QR Button */}
-                                    <button
-                                        onClick={handleGenerateQr}
-                                        disabled={generatingQr}
-                                        className="w-full py-4 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] transition-all flex items-center justify-center gap-3"
-                                    >
-                                        {generatingQr ? <Loader2 className="w-5 h-5 animate-spin" /> : <QrCode className="w-5 h-5" />}
-                                        Generate Payment QR Code
-                                        {couponResult?.valid
-                                            ? <span className="ml-2 text-blue-200">(&#8377;{couponResult.final_amount})</span>
-                                            : <span className="ml-2 text-blue-200">(&#8377;1,500)</span>
-                                        }
-                                    </button>
-                                </div>
-                            )}
-                        </SectionCard>
-                    )}
-
-                    {/* ═══════════════════════════════════════════════════════════
-                        SECTION 2: DOCUMENT UPLOAD (Gated for finance leads)
+                        SECTION 2: DOCUMENT UPLOAD
                        ═══════════════════════════════════════════════════════════ */}
                     <SectionCard
                         title="Document Upload"
                         icon={<FileText className="w-5 h-5 text-[#0047AB]" />}
-                        disabled={documentsGated}
-                        disabledMessage="Complete facilitation fee payment to unlock document upload"
                     >
                         <div className="flex items-center justify-between mb-6">
                             <div className="flex items-center gap-4">
@@ -1096,24 +653,6 @@ export default function KYCPage() {
                                     </div>
                                 ))}
                             </div>
-
-                            {/* Face Match Result */}
-                            {(faceResult || faceMatching) && (
-                                <div className="mt-4 p-4 bg-gray-50 rounded-xl">
-                                    <h4 className="text-sm font-bold text-gray-900 mb-2 flex items-center gap-2">
-                                        <Camera className="w-4 h-4 text-[#0047AB]" /> Face Match
-                                    </h4>
-                                    {faceMatching ? (
-                                        <div className="flex items-center gap-2 text-sm text-gray-500"><Loader2 className="w-4 h-4 animate-spin" /> Comparing faces...</div>
-                                    ) : faceResult ? (
-                                        <div className={`p-3 rounded-lg text-sm ${faceResult.success && faceResult.is_match ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                            {faceResult.success && faceResult.is_match ? <CheckCircle2 className="w-4 h-4 inline mr-1" /> : <XCircle className="w-4 h-4 inline mr-1" />}
-                                            {faceResult.message}
-                                            {faceResult.match_score != null && <span className="ml-2 font-bold">Score: {faceResult.match_score}%</span>}
-                                        </div>
-                                    ) : null}
-                                </div>
-                            )}
                         </SectionCard>
                     )}
 
@@ -1251,97 +790,6 @@ export default function KYCPage() {
                             )}
                         </SectionCard>
                     )}
-
-                    {/* ═══════════════════════════════════════════════════════════
-                        SECTION 5: IDENTITY VERIFICATION (Decentro)
-                       ═══════════════════════════════════════════════════════════ */}
-                    <SectionCard title="Identity Verification (Decentro)" icon={<Shield className="w-5 h-5 text-[#0047AB]" />}>
-                        <p className="text-xs text-gray-400 mb-6">Real-time verification checks via Decentro API.</p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {/* PAN */}
-                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><CreditCard className="w-4 h-4 text-[#0047AB]" /> PAN Verification</h4>
-                                <div className="flex gap-2">
-                                    <input value={panNumber} onChange={e => { setPanNumber(e.target.value.toUpperCase().slice(0, 10)); setPanResult(null); }}
-                                        placeholder="ABCDE1234F" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8] uppercase" maxLength={10} />
-                                    <button onClick={handlePanVerify} disabled={panVerifying || panNumber.length !== 10}
-                                        className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
-                                        {panVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify
-                                    </button>
-                                </div>
-                                {panResult && (
-                                    <div className={`p-3 rounded-xl text-xs font-medium ${panResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                        {panResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                        {panResult.message}
-                                        {panResult.data?.name && <div className="mt-1 font-bold">Name: {panResult.data.name}</div>}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Aadhaar */}
-                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3">
-                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><Shield className="w-4 h-4 text-[#0047AB]" /> Aadhaar Verification (OTP)</h4>
-                                {aadhaarStep === 'input' ? (
-                                    <div className="flex gap-2">
-                                        <input value={aadhaarNumber} onChange={e => { setAadhaarNumber(e.target.value.replace(/\D/g, '').slice(0, 12)); setAadhaarResult(null); }}
-                                            placeholder="12-digit Aadhaar" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" maxLength={12} />
-                                        <button onClick={handleAadhaarSendOtp} disabled={aadhaarVerifying || aadhaarNumber.length !== 12}
-                                            className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
-                                            {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />} Send OTP
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <div className="space-y-2">
-                                        <div className="flex gap-2">
-                                            <input value={aadhaarOtp} onChange={e => setAadhaarOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                                                placeholder="6-digit OTP" className="flex-1 h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" maxLength={6} />
-                                            <button onClick={handleAadhaarVerifyOtp} disabled={aadhaarVerifying || aadhaarOtp.length !== 6}
-                                                className="px-4 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
-                                                {aadhaarVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify
-                                            </button>
-                                        </div>
-                                        <button onClick={() => setAadhaarStep('input')} className="text-xs text-gray-400 hover:text-gray-600">Change Aadhaar number</button>
-                                    </div>
-                                )}
-                                {aadhaarResult && (
-                                    <div className={`p-3 rounded-xl text-xs font-medium ${aadhaarResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                        {aadhaarResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                        {aadhaarResult.message}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Bank Account */}
-                            <div className="p-5 bg-gray-50 rounded-2xl space-y-3 md:col-span-2">
-                                <h4 className="text-sm font-black text-gray-900 flex items-center gap-2"><CreditCard className="w-4 h-4 text-[#0047AB]" /> Bank Account Verification</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                    <input value={bankAccountNo} onChange={e => { setBankAccountNo(e.target.value.replace(/\D/g, '')); setBankResult(null); }}
-                                        placeholder="Account Number" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono outline-none focus:border-[#1D4ED8]" />
-                                    <input value={bankIfsc} onChange={e => setBankIfsc(e.target.value.toUpperCase().slice(0, 11))}
-                                        placeholder="IFSC Code" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm font-mono uppercase outline-none focus:border-[#1D4ED8]" maxLength={11} />
-                                    <input value={bankName} onChange={e => setBankName(e.target.value)}
-                                        placeholder="Account Holder Name (optional)" className="h-10 px-3 bg-white border-2 border-[#EBEBEB] rounded-xl text-sm outline-none focus:border-[#1D4ED8]" />
-                                </div>
-                                <div className="flex gap-3">
-                                    <button onClick={handleBankVerify} disabled={bankVerifying || !bankAccountNo || !bankIfsc}
-                                        className="px-6 py-2 bg-[#0047AB] text-white rounded-xl text-xs font-bold disabled:opacity-40 flex items-center gap-1">
-                                        {bankVerifying ? <Loader2 className="w-3 h-3 animate-spin" /> : <Shield className="w-3 h-3" />} Verify Account
-                                    </button>
-                                    <button onClick={() => { setShowBankManual(true); setManualEntryTab('bank'); }}
-                                        className="px-4 py-2 border-2 border-gray-200 rounded-xl text-xs font-bold text-gray-600 hover:border-[#0047AB] flex items-center gap-1">
-                                        <FileText className="w-3 h-3" /> Enter Manually
-                                    </button>
-                                </div>
-                                {bankResult && (
-                                    <div className={`p-3 rounded-xl text-xs font-medium ${bankResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
-                                        {bankResult.success ? <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" /> : <XCircle className="w-3.5 h-3.5 inline mr-1" />}
-                                        {bankResult.message}
-                                        {bankResult.data?.beneficiary_name && <div className="mt-1 font-bold">Name: {bankResult.data.beneficiary_name}</div>}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </SectionCard>
 
                     {/* ═══════════════════════════════════════════════════════════
                         SECTION 6: CUSTOMER CONSENT
@@ -1526,15 +974,7 @@ export default function KYCPage() {
                             </button>
                         </div>
                         <div className="flex items-center gap-3">
-                            {!verificationSubmitted && (
-                                <button onClick={handleSubmitVerification}
-                                    disabled={submitting || docStats.uploaded < docStats.total || (isFinance && !feePaid)}
-                                    className="px-6 py-2.5 border-2 border-[#0047AB] text-[#0047AB] rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-blue-50 flex items-center gap-2">
-                                    {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-                                    Submit Verification
-                                </button>
-                            )}
-                            <button onClick={handleSaveAndNext} disabled={saving}
+                            <button onClick={handleSaveAndNext} disabled={saving || submitted}
                                 className="px-8 py-2.5 bg-[#0047AB] text-white rounded-xl text-sm font-bold disabled:opacity-40 hover:bg-[#003580] flex items-center gap-2">
                                 Save & Next <ArrowRight className="w-4 h-4" />
                             </button>
