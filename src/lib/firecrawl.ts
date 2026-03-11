@@ -124,6 +124,10 @@ export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[
         });
 
         const jsonData = (scrapeResponse as { json?: unknown }).json;
+        console.log(
+            `[Firecrawl][Trace] Scrape response for "${url.slice(0, 80)}": ` +
+            `keys=${Object.keys(scrapeResponse as object).join(', ')}`
+        );
         if (!jsonData) {
             console.warn(`[Firecrawl] No JSON in scrape response for "${url.slice(0, 80)}". Keys: ${Object.keys(scrapeResponse as object).join(', ')}`);
             return results;
@@ -170,6 +174,13 @@ interface SearchResult {
     discoveredUrls: string[];
 }
 
+type FirecrawlSearchResponse = {
+    data?: unknown[];
+    web?: unknown[];
+    success?: boolean;
+    error?: string;
+};
+
 export async function searchDealers(query: string): Promise<SearchResult> {
     const app = getClient();
     const records: RawDealerRecord[] = [];
@@ -178,12 +189,20 @@ export async function searchDealers(query: string): Promise<SearchResult> {
     try {
         // Use search purely for URL discovery — JSON extraction is not
         // supported in search scrapeOptions and causes the call to fail.
-        const searchResponse = await app.search(query, { limit: 8 });
+        const searchResponse = await app.search(query, { limit: 8 }) as FirecrawlSearchResponse;
 
-        const webResults = (searchResponse as { web?: unknown[] }).web ?? [];
+        // Firecrawl v4 SDK returns results in `data`. Keep `web` fallback for legacy payloads.
+        const webResults = searchResponse.data ?? searchResponse.web ?? [];
+
+        if (searchResponse.success === false || searchResponse.error) {
+            console.warn(
+                `[Firecrawl][Trace] Search API warning for "${query.slice(0, 50)}": ` +
+                `${searchResponse.error ?? 'success=false'}`
+            );
+        }
 
         console.log(
-            `[Firecrawl] Search "${query.slice(0, 50)}": ${webResults.length} web results`
+            `[Firecrawl][Trace] Search "${query.slice(0, 50)}": ${webResults.length} web results`
         );
 
         for (const item of webResults) {
@@ -194,6 +213,11 @@ export async function searchDealers(query: string): Promise<SearchResult> {
                 discoveredUrls.push(pageUrl);
             }
         }
+
+        console.log(
+            `[Firecrawl][Trace] Query "${query.slice(0, 50)}" discovered URLs: ` +
+            `${discoveredUrls.slice(0, 5).join(', ') || 'none'}`
+        );
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Firecrawl] Error searching "${query}":`, msg);
