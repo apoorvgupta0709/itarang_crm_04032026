@@ -1379,6 +1379,13 @@ export const scrapedDealerLeads = pgTable('scraped_dealer_leads', {
     location_state: varchar('location_state', { length: 100 }),
     source_url: text('source_url'),
     raw_data: jsonb('raw_data'),                                          // full scraped payload for reference
+    email: varchar('email', { length: 255 }),
+    gst_number: varchar('gst_number', { length: 20 }),
+    business_type: varchar('business_type', { length: 50 }),
+    products_sold: text('products_sold'),
+    website: text('website'),
+    quality_score: integer('quality_score'),
+    phone_valid: boolean('phone_valid'),
     // Assignment (Sales Head assigns to Sales Manager)
     assigned_to: uuid('assigned_to').references(() => users.id),         // null = unassigned
     assigned_by: uuid('assigned_by').references(() => users.id),
@@ -1413,6 +1420,37 @@ export const scraperDedupLogs = pgTable('scraper_dedup_logs', {
     created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
     ddupRunIdx: index('ddup_run_idx').on(table.scraper_run_id),
+}));
+
+export const scraperSearchQueries = pgTable('scraper_search_queries', {
+    id: varchar('id', { length: 255 }).primaryKey(),             // SQ-YYYYMMDD-SEQ
+    query_text: text('query_text').notNull(),
+    is_active: boolean('is_active').notNull().default(true),
+    created_by: uuid('created_by').references(() => users.id).notNull(),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+    sqActiveIdx: index('sq_active_idx').on(table.is_active),
+}));
+
+export const scraperSearchQueriesRelations = relations(scraperSearchQueries, ({ one }) => ({
+    createdBy: one(users, { fields: [scraperSearchQueries.created_by], references: [users.id] }),
+}));
+
+export const scraperSchedules = pgTable('scraper_schedules', {
+    id: varchar('id', { length: 255 }).primaryKey(),
+    frequency: varchar('frequency', { length: 20 }).notNull(),
+    day_of_week: integer('day_of_week'),
+    time_of_day: varchar('time_of_day', { length: 5 }).notNull().default('03:00'),
+    is_active: boolean('is_active').notNull().default(true),
+    last_run_at: timestamp('last_run_at', { withTimezone: true }),
+    created_by: uuid('created_by').references(() => users.id).notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    created_at: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const scraperSchedulesRelations = relations(scraperSchedules, ({ one }) => ({
+    createdBy: one(users, { fields: [scraperSchedules.created_by], references: [users.id] }),
 }));
 
 // Relations for scraper tables

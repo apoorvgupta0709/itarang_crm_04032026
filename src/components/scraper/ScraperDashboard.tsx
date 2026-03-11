@@ -5,10 +5,13 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Search, Play, AlertCircle, CheckCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScraperRunsTable } from './ScraperRunsTable';
+import { QueryManager } from './QueryManager';
+import { ScheduleConfig } from './ScheduleConfig';
 
 export function ScraperDashboard() {
     const queryClient = useQueryClient();
     const [toast, setToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+    const [tab, setTab] = useState<'history' | 'queries'>('history');
 
     const triggerMutation = useMutation({
         mutationFn: async () => {
@@ -88,11 +91,40 @@ export function ScraperDashboard() {
                 </div>
             </div>
 
-            {/* Run history */}
-            <div>
-                <h2 className="text-sm font-semibold text-gray-700 mb-3">Run History</h2>
-                <ScraperRunsTable />
+            <ScheduleConfig />
+
+            {/* Tabs */}
+            <div className="flex gap-1 bg-gray-100 rounded-lg p-1 w-fit">
+                <button
+                    onClick={() => setTab('history')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                        tab === 'history' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                >
+                    Run History
+                </button>
+                <button
+                    onClick={() => setTab('queries')}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                        tab === 'queries' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                >
+                    Search Queries
+                </button>
             </div>
+
+            {/* Tab content */}
+            {tab === 'history' ? (
+                <div>
+                    <h2 className="text-sm font-semibold text-gray-700 mb-3">Run History</h2>
+                    <ScraperRunsTable />
+                </div>
+            ) : (
+                <div>
+                    <h2 className="text-sm font-semibold text-gray-700 mb-3">Manage Search Queries</h2>
+                    <QueryManager />
+                </div>
+            )}
         </div>
     );
 }

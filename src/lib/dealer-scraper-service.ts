@@ -14,9 +14,11 @@ import {
     scrapedDealerLeads,
     scraperDedupLogs,
     leads,
+    scraperSearchQueries,
 } from '@/lib/db/schema';
 import { generateId } from '@/lib/api-utils';
 import { scrapeAllDealers, normalizePhone } from '@/lib/firecrawl';
+import { enrichRecord } from '@/lib/scraper-enrichment';
 import { eq, or, sql } from 'drizzle-orm';
 import type { RawDealerRecord } from '@/types/scraper';
 
@@ -93,7 +95,17 @@ export async function runDealerScraper(runId: string): Promise<void> {
 
     try {
         // 1. Scrape
-        const { records, queriesUsed } = await scrapeAllDealers();
+        // Load active queries from DB, fall back to hardcoded
+        const dbQueries = await db
+            .select({ query_text: scraperSearchQueries.query_text })
+            .from(scraperSearchQueries)
+            .where(eq(scraperSearchQueries.is_active, true));
+
+        const customQueries = dbQueries.length > 0
+            ? dbQueries.map((q) => q.query_text)
+            : undefined;
+
+        const { records, queriesUsed } = await scrapeAllDealers(customQueries);
         totalFound = records.length;
 
         // Persist the queries used for auditability
@@ -120,16 +132,24 @@ export async function runDealerScraper(runId: string): Promise<void> {
                 });
                 duplicatesSkipped++;
             } else {
-                // New lead – persist
+                // New lead – enrich and persist
+                const enriched = enrichRecord(record);
                 await db.insert(scrapedDealerLeads).values({
                     id: await generateId('SDL', scrapedDealerLeads),
                     scraper_run_id: runId,
-                    dealer_name: record.dealer_name,
-                    phone: record.phone ?? null,
-                    location_city: record.city ?? null,
-                    location_state: record.state ?? null,
-                    source_url: record.source_url ?? null,
+                    dealer_name: enriched.dealer_name,
+                    phone: enriched.phone ?? null,
+                    location_city: enriched.city ?? null,
+                    location_state: enriched.state ?? null,
+                    source_url: enriched.source_url ?? null,
                     raw_data: record as unknown as Record<string, unknown>,
+                    email: enriched.email ?? null,
+                    gst_number: enriched.gst_number ?? null,
+                    business_type: enriched.business_type ?? null,
+                    products_sold: enriched.products_sold ?? null,
+                    website: enriched.website ?? null,
+                    quality_score: enriched.quality_score,
+                    phone_valid: enriched.phone_valid,
                     exploration_status: 'unassigned',
                 });
                 newLeadsSaved++;

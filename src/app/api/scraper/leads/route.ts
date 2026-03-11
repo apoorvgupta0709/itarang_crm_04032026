@@ -61,6 +61,13 @@ export const GET = withErrorHandler(async (req: Request) => {
             converted_lead_id: scrapedDealerLeads.converted_lead_id,
             created_at: scrapedDealerLeads.created_at,
             updated_at: scrapedDealerLeads.updated_at,
+            email: scrapedDealerLeads.email,
+            gst_number: scrapedDealerLeads.gst_number,
+            business_type: scrapedDealerLeads.business_type,
+            products_sold: scrapedDealerLeads.products_sold,
+            website: scrapedDealerLeads.website,
+            quality_score: scrapedDealerLeads.quality_score,
+            phone_valid: scrapedDealerLeads.phone_valid,
             assigned_to_name: users.name,
         })
         .from(scrapedDealerLeads)

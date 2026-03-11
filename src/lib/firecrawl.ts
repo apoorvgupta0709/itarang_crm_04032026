@@ -40,6 +40,11 @@ const DealerExtractSchema = z.object({
             city: z.string().optional().describe('City where the dealer is located'),
             state: z.string().optional().describe('State/region where the dealer is located'),
             address: z.string().optional().describe('Full address if available'),
+            email: z.string().optional().describe('Email address if available'),
+            gst_number: z.string().optional().describe('GST number / GSTIN if available'),
+            business_type: z.string().optional().describe('Type: distributor, dealer, wholesaler, or retailer'),
+            products_sold: z.string().optional().describe('Products or brands they sell'),
+            website: z.string().optional().describe('Website URL if available'),
         })
     ).describe('List of 3-wheeler battery dealers found on the page'),
 });
@@ -66,6 +71,81 @@ export function normalizePhone(raw: string | undefined | null): string | null {
     if (digits.length === 11 && digits.startsWith('0')) return `+91${digits.slice(1)}`;
     if (digits.length > 10) return `+91${digits.slice(-10)}`;
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Known directory domains for deep scraping
+// ---------------------------------------------------------------------------
+const DIRECTORY_DOMAINS = [
+    'justdial.com',
+    'indiamart.com',
+    'sulekha.com',
+    'tradeindia.com',
+    'exportersindia.com',
+    'google.com/maps',
+    'google.co.in/maps',
+];
+
+function isDirectoryUrl(url: string): boolean {
+    try {
+        const hostname = new URL(url).hostname.replace('www.', '');
+        const fullUrl = url.toLowerCase();
+        return DIRECTORY_DOMAINS.some(
+            (domain) => hostname.includes(domain) || fullUrl.includes(domain)
+        );
+    } catch {
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deep scrape a single directory page for dealer records
+// ---------------------------------------------------------------------------
+export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[]> {
+    const app = getClient();
+    const results: RawDealerRecord[] = [];
+
+    try {
+        const scrapeResponse = await app.scrapeUrl(url, {
+            formats: [
+                {
+                    type: 'json',
+                    schema: DealerExtractSchema,
+                    prompt:
+                        'Extract every 3-wheeler battery dealer from this page. ' +
+                        'Include dealer name, phone number, city, state, email, GST number, ' +
+                        'business type, products sold, and website. Only extract dealers.',
+                } as { type: 'json'; schema: typeof DealerExtractSchema; prompt: string },
+            ],
+        });
+
+        const parsed = DealerExtractSchema.safeParse(
+            (scrapeResponse as { json?: unknown }).json
+        );
+        if (!parsed.success || !parsed.data.dealers?.length) return results;
+
+        for (const d of parsed.data.dealers) {
+            if (!d.dealer_name) continue;
+            results.push({
+                dealer_name: d.dealer_name.trim(),
+                phone: normalizePhone(d.phone) ?? undefined,
+                city: d.city?.trim(),
+                state: d.state?.trim(),
+                address: d.address?.trim(),
+                source_url: url,
+                email: d.email?.trim(),
+                gst_number: d.gst_number?.trim(),
+                business_type: d.business_type?.trim()?.toLowerCase(),
+                products_sold: d.products_sold?.trim(),
+                website: d.website?.trim(),
+            });
+        }
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Firecrawl] Error scraping directory page "${url}":`, msg);
+    }
+
+    return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +196,11 @@ export async function searchDealers(query: string): Promise<RawDealerRecord[]> {
                     state: d.state?.trim(),
                     address: d.address?.trim(),
                     source_url: pageUrl,
+                    email: d.email?.trim(),
+                    gst_number: d.gst_number?.trim(),
+                    business_type: d.business_type?.trim()?.toLowerCase(),
+                    products_sold: d.products_sold?.trim(),
+                    website: d.website?.trim(),
                 });
             }
         }
@@ -129,19 +214,48 @@ export async function searchDealers(query: string): Promise<RawDealerRecord[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Run all search queries with intra-batch dedup
+// Run all search queries with intra-batch dedup + deep scrape directory pages
 // ---------------------------------------------------------------------------
-export async function scrapeAllDealers(): Promise<{
+export async function scrapeAllDealers(customQueries?: string[]): Promise<{
     records: RawDealerRecord[];
     queriesUsed: string[];
 }> {
+    const queries = customQueries ?? DEALER_SEARCH_QUERIES;
     const allRecords: RawDealerRecord[] = [];
     const seenPhones = new Set<string>();
     const seenUrls = new Set<string>();
+    const directoryUrlsToScrape = new Set<string>();
 
-    for (const query of DEALER_SEARCH_QUERIES) {
+    // Phase 1: Search queries
+    for (const query of queries) {
         const batch = await searchDealers(query);
         for (const record of batch) {
+            const phoneKey = record.phone;
+            const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
+
+            if (phoneKey && seenPhones.has(phoneKey)) continue;
+            if (urlKey && seenUrls.has(urlKey)) continue;
+
+            if (phoneKey) seenPhones.add(phoneKey);
+            if (urlKey) seenUrls.add(urlKey);
+
+            allRecords.push(record);
+
+            // Collect directory URLs for deep scraping
+            if (record.source_url && isDirectoryUrl(record.source_url)) {
+                const normalizedUrl = record.source_url.split('?')[0];
+                if (!directoryUrlsToScrape.has(normalizedUrl)) {
+                    directoryUrlsToScrape.add(normalizedUrl);
+                }
+            }
+        }
+    }
+
+    // Phase 2: Deep scrape directory pages (max 5 to stay within limits)
+    const urlsToScrape = Array.from(directoryUrlsToScrape).slice(0, 5);
+    for (const url of urlsToScrape) {
+        const deepResults = await scrapeDirectoryPage(url);
+        for (const record of deepResults) {
             const phoneKey = record.phone;
             const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
 
@@ -155,5 +269,5 @@ export async function scrapeAllDealers(): Promise<{
         }
     }
 
-    return { records: allRecords, queriesUsed: DEALER_SEARCH_QUERIES };
+    return { records: allRecords, queriesUsed: queries };
 }

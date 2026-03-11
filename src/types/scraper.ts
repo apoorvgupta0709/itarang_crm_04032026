@@ -11,6 +11,13 @@ export type NewScrapedDealerLead = InferInsertModel<typeof schema.scrapedDealerL
 export type ScraperDedupLog = InferSelectModel<typeof schema.scraperDedupLogs>;
 export type NewScraperDedupLog = InferInsertModel<typeof schema.scraperDedupLogs>;
 
+export type ScraperSearchQuery = InferSelectModel<typeof schema.scraperSearchQueries>;
+export type NewScraperSearchQuery = InferInsertModel<typeof schema.scraperSearchQueries>;
+
+export type ScraperSchedule = InferSelectModel<typeof schema.scraperSchedules>;
+export type NewScraperSchedule = InferInsertModel<typeof schema.scraperSchedules>;
+export type ScheduleFrequency = 'every_2_days' | 'weekly' | 'biweekly' | 'monthly';
+
 // ---- Status enums ----
 export type ScraperRunStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -59,4 +66,9 @@ export interface RawDealerRecord {
     state?: string;
     address?: string;
     source_url?: string;
+    email?: string;
+    gst_number?: string;
+    business_type?: string;
+    products_sold?: string;
+    website?: string;
 }

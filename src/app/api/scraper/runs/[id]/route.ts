@@ -47,6 +47,14 @@ export const GET = withErrorHandler(
                 assigned_to: scrapedDealerLeads.assigned_to,
                 assigned_at: scrapedDealerLeads.assigned_at,
                 created_at: scrapedDealerLeads.created_at,
+                email: scrapedDealerLeads.email,
+                gst_number: scrapedDealerLeads.gst_number,
+                business_type: scrapedDealerLeads.business_type,
+                products_sold: scrapedDealerLeads.products_sold,
+                website: scrapedDealerLeads.website,
+                quality_score: scrapedDealerLeads.quality_score,
+                phone_valid: scrapedDealerLeads.phone_valid,
+                converted_lead_id: scrapedDealerLeads.converted_lead_id,
                 assigned_to_name: users.name,
             })
             .from(scrapedDealerLeads)

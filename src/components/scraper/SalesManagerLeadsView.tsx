@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Phone, MapPin, ExternalLink, ChevronDown, ChevronUp, Save } from 'lucide-react';
 import { ExplorationStatusBadge } from './ExplorationStatusBadge';
+import { QualityScoreBadge } from './QualityScoreBadge';
 import { Button } from '@/components/ui/button';
 import type { ExplorationStatus } from '@/types/scraper';
 
@@ -18,6 +19,14 @@ interface LeadRow {
     exploration_notes: string | null;
     assigned_at: string | null;
     created_at: string;
+    converted_lead_id: string | null;
+    email: string | null;
+    gst_number: string | null;
+    business_type: string | null;
+    products_sold: string | null;
+    website: string | null;
+    quality_score: number | null;
+    phone_valid: boolean | null;
 }
 
 function LeadDetailDrawer({
@@ -72,6 +81,9 @@ function LeadDetailDrawer({
                         >
                             <Phone className="w-3.5 h-3.5" />
                             {lead.phone}
+                            {lead.phone_valid === false && (
+                                <span className="text-xs text-orange-500 ml-1">(unverified)</span>
+                            )}
                         </a>
                     </div>
                 )}
@@ -96,6 +108,36 @@ function LeadDetailDrawer({
                             <ExternalLink className="w-3 h-3" />
                             {lead.source_url.slice(0, 60)}…
                         </a>
+                    </div>
+                )}
+                {lead.email && (
+                    <div>
+                        <p className="text-xs text-gray-400 mb-0.5">Email</p>
+                        <a href={`mailto:${lead.email}`} className="text-teal-600 text-sm">{lead.email}</a>
+                    </div>
+                )}
+                {lead.gst_number && (
+                    <div>
+                        <p className="text-xs text-gray-400 mb-0.5">GST Number</p>
+                        <span className="text-sm text-gray-700">{lead.gst_number}</span>
+                    </div>
+                )}
+                {lead.business_type && (
+                    <div>
+                        <p className="text-xs text-gray-400 mb-0.5">Business Type</p>
+                        <span className="text-sm text-gray-700 capitalize">{lead.business_type}</span>
+                    </div>
+                )}
+                {lead.website && (
+                    <div>
+                        <p className="text-xs text-gray-400 mb-0.5">Website</p>
+                        <a href={lead.website} target="_blank" rel="noopener noreferrer" className="text-blue-500 text-sm">{lead.website}</a>
+                    </div>
+                )}
+                {lead.products_sold && (
+                    <div className="col-span-2">
+                        <p className="text-xs text-gray-400 mb-0.5">Products</p>
+                        <span className="text-sm text-gray-700">{lead.products_sold}</span>
                     </div>
                 )}
             </div>
@@ -160,6 +202,32 @@ function LeadDetailDrawer({
                     <Save className="w-3.5 h-3.5" />
                     {saved ? 'Saved!' : mutation.isPending ? 'Saving…' : 'Save'}
                 </Button>
+                {(lead.exploration_status === 'explored' || lead.exploration_status === 'exploring') && !lead.converted_lead_id && (
+                    <Button
+                        size="sm"
+                        className="bg-blue-600 hover:bg-blue-700 text-white text-xs gap-1.5 ml-auto"
+                        onClick={() => {
+                            const params = new URLSearchParams({
+                                from_scraped: lead.id,
+                                name: lead.dealer_name,
+                                phone: lead.phone ?? '',
+                                city: lead.location_city ?? '',
+                                state: lead.location_state ?? '',
+                            });
+                            window.open(`/dealer-portal/leads/new?${params}`, '_blank');
+                        }}
+                    >
+                        Convert to CRM Lead
+                    </Button>
+                )}
+                {lead.converted_lead_id && (
+                    <a
+                        href={`/dealer-portal/leads/${lead.converted_lead_id}/kyc`}
+                        className="text-xs text-blue-600 underline ml-auto self-center"
+                    >
+                        View CRM Lead
+                    </a>
+                )}
             </div>
         </div>
     );
@@ -249,6 +317,7 @@ export function SalesManagerLeadsView() {
                                             </p>
                                         </div>
                                         <ExplorationStatusBadge status={lead.exploration_status} />
+                                        <QualityScoreBadge score={lead.quality_score} />
                                     </div>
                                     {isOpen ? (
                                         <ChevronUp className="w-4 h-4 text-gray-400" />

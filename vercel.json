@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/ai-dialer",
       "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/scraper/cron",
+      "schedule": "0 4 * * *"
     }
   ]
 }

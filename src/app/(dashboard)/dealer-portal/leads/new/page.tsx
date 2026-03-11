@@ -21,6 +21,9 @@ function NewLeadWizardContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const step = parseInt(searchParams.get('step') || '1');
+    const fromScraped = searchParams.get('from_scraped');
+    const prefillName = searchParams.get('name');
+    const prefillPhone = searchParams.get('phone');
     const { user } = useAuth();
 
     // Session/Core State
@@ -132,6 +135,16 @@ function NewLeadWizardContent() {
         initDraft(fresh);
     }, []);
 
+    useEffect(() => {
+        if (prefillName || prefillPhone) {
+            setFormData((prev: any) => ({
+                ...prev,
+                full_name: prefillName || prev.full_name,
+                phone: prefillPhone || prev.phone,
+            }));
+        }
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
     // 2) Data Loading
     useEffect(() => {
         fetch('/api/inventory/categories').then(r => r.json()).then(d => d.success && setCategories(d.data));
@@ -240,6 +253,14 @@ function NewLeadWizardContent() {
             const result = await res.json();
             if (result.success) {
                 const { leadId: updatedLeadId } = result.data;
+                // If coming from scraper, link the converted lead
+                if (fromScraped && updatedLeadId) {
+                    fetch(`/api/scraper/leads/${fromScraped}/convert`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ converted_lead_id: updatedLeadId }),
+                    }).catch(console.error);
+                }
                 const isFinanceMethod = ['finance', 'other_finance', 'dealer_finance'].includes(formData.payment_method);
                 if (formData.payment_method === 'upfront') {
                     router.push(`/dealer-portal/leads`);
