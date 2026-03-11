@@ -79,9 +79,11 @@ export function normalizePhone(raw: string | undefined | null): string | null {
 const DIRECTORY_DOMAINS = [
     'justdial.com',
     'indiamart.com',
+    'dir.indiamart.com',
     'sulekha.com',
     'tradeindia.com',
     'exportersindia.com',
+    'getdistributors.com',
     'google.com/maps',
     'google.co.in/maps',
 ];
@@ -112,9 +114,11 @@ export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[
                     type: 'json',
                     schema: DealerExtractSchema,
                     prompt:
-                        'Extract every 3-wheeler battery dealer from this page. ' +
-                        'Include dealer name, phone number, city, state, email, GST number, ' +
-                        'business type, products sold, and website. Only extract dealers.',
+                        'This is a business directory or listing page. Extract EVERY dealer, ' +
+                        'distributor, wholesaler, or supplier listed on this page. For each, ' +
+                        'extract: business name, phone number, city, state, email, GST number, ' +
+                        'business type (dealer/distributor/wholesaler/retailer), products they sell, ' +
+                        'and website. Extract ALL listings, not just the first few.',
                 } as { type: 'json'; schema: typeof DealerExtractSchema; prompt: string },
             ],
         });
@@ -149,16 +153,21 @@ export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[
 }
 
 // ---------------------------------------------------------------------------
-// Scrape a single search query and return raw dealer records
+// Phase 1: Search — discover relevant URLs (search is discovery, not extraction)
+// Returns { records (if JSON extraction worked), discoveredUrls (all result URLs) }
 // ---------------------------------------------------------------------------
-export async function searchDealers(query: string): Promise<RawDealerRecord[]> {
+
+interface SearchResult {
+    records: RawDealerRecord[];
+    discoveredUrls: string[];
+}
+
+export async function searchDealers(query: string): Promise<SearchResult> {
     const app = getClient();
-    const results: RawDealerRecord[] = [];
+    const records: RawDealerRecord[] = [];
+    const discoveredUrls: string[] = [];
 
     try {
-        // Firecrawl v4: search returns SearchData with .web[] array
-        // When scrapeOptions with formats: [{ type: 'json' }] is provided,
-        // each web result is a Document with a .json property.
         const searchResponse = await app.search(query, {
             limit: 8,
             scrapeOptions: {
@@ -168,53 +177,81 @@ export async function searchDealers(query: string): Promise<RawDealerRecord[]> {
                         schema: DealerExtractSchema,
                         prompt:
                             'Extract every 3-wheeler battery dealer from this page. ' +
-                            'Include dealer name, phone number, city and state. ' +
-                            'Only extract dealers, not customers.',
+                            'Include dealer name, phone number, city, state, email, GST number, ' +
+                            'business type, products sold, and website. Only extract dealers.',
                     } as { type: 'json'; schema: typeof DealerExtractSchema; prompt: string },
                 ],
             },
         });
 
-        // searchResponse is SearchData: { web?: Array<SearchResultWeb | Document> }
         const webResults = (searchResponse as { web?: unknown[] }).web ?? [];
 
         for (const item of webResults) {
             const doc = item as { url?: string; json?: unknown };
             const pageUrl = doc.url ?? '';
 
-            if (!doc.json) continue;
+            // Always collect the URL for potential Phase 2 scraping
+            if (pageUrl) {
+                discoveredUrls.push(pageUrl);
+            }
 
-            const parsed = DealerExtractSchema.safeParse(doc.json);
-            if (!parsed.success || !parsed.data.dealers?.length) continue;
-
-            for (const d of parsed.data.dealers) {
-                if (!d.dealer_name) continue;
-                results.push({
-                    dealer_name: d.dealer_name.trim(),
-                    phone: normalizePhone(d.phone) ?? undefined,
-                    city: d.city?.trim(),
-                    state: d.state?.trim(),
-                    address: d.address?.trim(),
-                    source_url: pageUrl,
-                    email: d.email?.trim(),
-                    gst_number: d.gst_number?.trim(),
-                    business_type: d.business_type?.trim()?.toLowerCase(),
-                    products_sold: d.products_sold?.trim(),
-                    website: d.website?.trim(),
-                });
+            // If JSON extraction worked, great — use it
+            if (doc.json) {
+                const parsed = DealerExtractSchema.safeParse(doc.json);
+                if (parsed.success && parsed.data.dealers?.length) {
+                    for (const d of parsed.data.dealers) {
+                        if (!d.dealer_name) continue;
+                        records.push({
+                            dealer_name: d.dealer_name.trim(),
+                            phone: normalizePhone(d.phone) ?? undefined,
+                            city: d.city?.trim(),
+                            state: d.state?.trim(),
+                            address: d.address?.trim(),
+                            source_url: pageUrl,
+                            email: d.email?.trim(),
+                            gst_number: d.gst_number?.trim(),
+                            business_type: d.business_type?.trim()?.toLowerCase(),
+                            products_sold: d.products_sold?.trim(),
+                            website: d.website?.trim(),
+                        });
+                    }
+                }
             }
         }
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Firecrawl] Error searching "${query}":`, msg);
-        // Don't throw — partial results from other queries are still valuable
     }
 
-    return results;
+    return { records, discoveredUrls };
 }
 
 // ---------------------------------------------------------------------------
-// Run all search queries with intra-batch dedup + deep scrape directory pages
+// Helper: deduplicate and add record to the collection
+// ---------------------------------------------------------------------------
+function addRecordIfNew(
+    record: RawDealerRecord,
+    allRecords: RawDealerRecord[],
+    seenPhones: Set<string>,
+    seenUrls: Set<string>,
+): boolean {
+    const phoneKey = record.phone;
+    const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
+
+    if (phoneKey && seenPhones.has(phoneKey)) return false;
+    if (urlKey && seenUrls.has(urlKey)) return false;
+
+    if (phoneKey) seenPhones.add(phoneKey);
+    if (urlKey) seenUrls.add(urlKey);
+
+    allRecords.push(record);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Run all search queries with two-phase approach:
+//   Phase 1: Search (discovery) — collect URLs + any inline JSON results
+//   Phase 2: Scrape (extraction) — deep scrape discovered pages for dealers
 // ---------------------------------------------------------------------------
 export async function scrapeAllDealers(customQueries?: string[]): Promise<{
     records: RawDealerRecord[];
@@ -224,50 +261,75 @@ export async function scrapeAllDealers(customQueries?: string[]): Promise<{
     const allRecords: RawDealerRecord[] = [];
     const seenPhones = new Set<string>();
     const seenUrls = new Set<string>();
-    const directoryUrlsToScrape = new Set<string>();
+    const urlsToScrape = new Set<string>();
+    const scrapedPageUrls = new Set<string>();
 
-    // Phase 1: Search queries
+    // Phase 1: Search — discover URLs and collect any inline extractions
+    console.log(`[Firecrawl] Phase 1: Running ${queries.length} search queries...`);
+
     for (const query of queries) {
-        const batch = await searchDealers(query);
-        for (const record of batch) {
-            const phoneKey = record.phone;
-            const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
+        const { records, discoveredUrls } = await searchDealers(query);
 
-            if (phoneKey && seenPhones.has(phoneKey)) continue;
-            if (urlKey && seenUrls.has(urlKey)) continue;
+        // Add any inline extracted records
+        for (const record of records) {
+            addRecordIfNew(record, allRecords, seenPhones, seenUrls);
+        }
 
-            if (phoneKey) seenPhones.add(phoneKey);
-            if (urlKey) seenUrls.add(urlKey);
-
-            allRecords.push(record);
-
-            // Collect directory URLs for deep scraping
-            if (record.source_url && isDirectoryUrl(record.source_url)) {
-                const normalizedUrl = record.source_url.split('?')[0];
-                if (!directoryUrlsToScrape.has(normalizedUrl)) {
-                    directoryUrlsToScrape.add(normalizedUrl);
-                }
+        // Collect ALL discovered URLs for Phase 2 scraping
+        for (const url of discoveredUrls) {
+            const normalized = url.split('?')[0].toLowerCase();
+            if (!scrapedPageUrls.has(normalized)) {
+                urlsToScrape.add(url);
             }
         }
     }
 
-    // Phase 2: Deep scrape directory pages (max 5 to stay within limits)
-    const urlsToScrape = Array.from(directoryUrlsToScrape).slice(0, 5);
+    console.log(
+        `[Firecrawl] Phase 1 results: ${allRecords.length} records from inline extraction, ` +
+        `${urlsToScrape.size} URLs discovered for deep scraping`
+    );
+
+    // Phase 2: Scrape — deep extract from discovered pages
+    // Prioritize directory pages, then scrape others if budget allows
+    const directoryUrls: string[] = [];
+    const otherUrls: string[] = [];
+
     for (const url of urlsToScrape) {
-        const deepResults = await scrapeDirectoryPage(url);
-        for (const record of deepResults) {
-            const phoneKey = record.phone;
-            const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
-
-            if (phoneKey && seenPhones.has(phoneKey)) continue;
-            if (urlKey && seenUrls.has(urlKey)) continue;
-
-            if (phoneKey) seenPhones.add(phoneKey);
-            if (urlKey) seenUrls.add(urlKey);
-
-            allRecords.push(record);
+        if (isDirectoryUrl(url)) {
+            directoryUrls.push(url);
+        } else {
+            otherUrls.push(url);
         }
     }
+
+    // Scrape up to 8 directory pages + up to 4 non-directory pages
+    const pagesToScrape = [
+        ...directoryUrls.slice(0, 8),
+        ...otherUrls.slice(0, 4),
+    ];
+
+    console.log(
+        `[Firecrawl] Phase 2: Scraping ${pagesToScrape.length} pages ` +
+        `(${Math.min(directoryUrls.length, 8)} directories, ` +
+        `${Math.min(otherUrls.length, 4)} other)...`
+    );
+
+    for (const url of pagesToScrape) {
+        const normalized = url.split('?')[0].toLowerCase();
+        if (scrapedPageUrls.has(normalized)) continue;
+        scrapedPageUrls.add(normalized);
+
+        const deepResults = await scrapeDirectoryPage(url);
+        let added = 0;
+        for (const record of deepResults) {
+            if (addRecordIfNew(record, allRecords, seenPhones, seenUrls)) {
+                added++;
+            }
+        }
+        console.log(`[Firecrawl]   ${url.slice(0, 80)}... → ${deepResults.length} found, ${added} new`);
+    }
+
+    console.log(`[Firecrawl] Total: ${allRecords.length} unique records from ${queries.length} queries`);
 
     return { records: allRecords, queriesUsed: queries };
 }
