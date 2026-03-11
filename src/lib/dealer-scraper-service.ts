@@ -108,10 +108,21 @@ export async function runDealerScraper(runId: string): Promise<void> {
         const { records, queriesUsed } = await scrapeAllDealers(customQueries);
         totalFound = records.length;
 
+        console.log(
+            `[Scraper] Run ${runId}: scrapeAllDealers returned ${totalFound} records from ${queriesUsed.length} queries`
+        );
+
         // Persist the queries used for auditability
         await db
             .update(scraperRuns)
-            .set({ search_queries: queriesUsed, total_found: totalFound })
+            .set({
+                search_queries: queriesUsed,
+                total_found: totalFound,
+                // Surface a warning when scraping yields nothing
+                ...(totalFound === 0
+                    ? { error_message: 'Scraping completed but found 0 records. Check Firecrawl API key, credits, and search queries.' }
+                    : {}),
+            })
             .where(eq(scraperRuns.id, runId));
 
         // 2. For each record: dedup → save or log

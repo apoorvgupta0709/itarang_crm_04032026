@@ -123,10 +123,18 @@ export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[
             ],
         });
 
-        const parsed = DealerExtractSchema.safeParse(
-            (scrapeResponse as { json?: unknown }).json
-        );
-        if (!parsed.success || !parsed.data.dealers?.length) return results;
+        const jsonData = (scrapeResponse as { json?: unknown }).json;
+        if (!jsonData) {
+            console.warn(`[Firecrawl] No JSON in scrape response for "${url.slice(0, 80)}". Keys: ${Object.keys(scrapeResponse as object).join(', ')}`);
+            return results;
+        }
+
+        const parsed = DealerExtractSchema.safeParse(jsonData);
+        if (!parsed.success) {
+            console.warn(`[Firecrawl] Schema parse failed for "${url.slice(0, 80)}":`, parsed.error.message);
+            return results;
+        }
+        if (!parsed.data.dealers?.length) return results;
 
         for (const d of parsed.data.dealers) {
             if (!d.dealer_name) continue;
@@ -168,54 +176,22 @@ export async function searchDealers(query: string): Promise<SearchResult> {
     const discoveredUrls: string[] = [];
 
     try {
-        const searchResponse = await app.search(query, {
-            limit: 8,
-            scrapeOptions: {
-                formats: [
-                    {
-                        type: 'json',
-                        schema: DealerExtractSchema,
-                        prompt:
-                            'Extract every 3-wheeler battery dealer from this page. ' +
-                            'Include dealer name, phone number, city, state, email, GST number, ' +
-                            'business type, products sold, and website. Only extract dealers.',
-                    } as { type: 'json'; schema: typeof DealerExtractSchema; prompt: string },
-                ],
-            },
-        });
+        // Use search purely for URL discovery — JSON extraction is not
+        // supported in search scrapeOptions and causes the call to fail.
+        const searchResponse = await app.search(query, { limit: 8 });
 
         const webResults = (searchResponse as { web?: unknown[] }).web ?? [];
 
+        console.log(
+            `[Firecrawl] Search "${query.slice(0, 50)}": ${webResults.length} web results`
+        );
+
         for (const item of webResults) {
-            const doc = item as { url?: string; json?: unknown };
+            const doc = item as { url?: string };
             const pageUrl = doc.url ?? '';
 
-            // Always collect the URL for potential Phase 2 scraping
             if (pageUrl) {
                 discoveredUrls.push(pageUrl);
-            }
-
-            // If JSON extraction worked, great — use it
-            if (doc.json) {
-                const parsed = DealerExtractSchema.safeParse(doc.json);
-                if (parsed.success && parsed.data.dealers?.length) {
-                    for (const d of parsed.data.dealers) {
-                        if (!d.dealer_name) continue;
-                        records.push({
-                            dealer_name: d.dealer_name.trim(),
-                            phone: normalizePhone(d.phone) ?? undefined,
-                            city: d.city?.trim(),
-                            state: d.state?.trim(),
-                            address: d.address?.trim(),
-                            source_url: pageUrl,
-                            email: d.email?.trim(),
-                            gst_number: d.gst_number?.trim(),
-                            business_type: d.business_type?.trim()?.toLowerCase(),
-                            products_sold: d.products_sold?.trim(),
-                            website: d.website?.trim(),
-                        });
-                    }
-                }
             }
         }
     } catch (err: unknown) {
