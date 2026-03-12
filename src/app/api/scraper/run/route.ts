@@ -11,7 +11,7 @@ import { scraperRuns, users } from '@/lib/db/schema';
 import { generateId, withErrorHandler, successResponse, errorResponse } from '@/lib/api-utils';
 import { requireRole } from '@/lib/auth-utils';
 import { runDealerScraper } from '@/lib/dealer-scraper-service';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, lt } from 'drizzle-orm';
 
 // Increase serverless timeout for scraper runs
 export const maxDuration = 300;
@@ -21,6 +21,19 @@ export const maxDuration = 300;
 // ---------------------------------------------------------------------------
 export const POST = withErrorHandler(async () => {
     const user = await requireRole(['sales_head', 'ceo', 'business_head']);
+
+    // Auto-recover stuck runs: if the serverless function was killed mid-run the
+    // 'running' status is never cleared, permanently blocking future triggers.
+    // Mark any run that has been 'running' longer than maxDuration as failed.
+    const stuckCutoff = new Date(Date.now() - maxDuration * 1000);
+    await db
+        .update(scraperRuns)
+        .set({
+            status: 'failed',
+            completed_at: new Date(),
+            error_message: 'Run timed out — auto-recovered after serverless function termination',
+        })
+        .where(and(eq(scraperRuns.status, 'running'), lt(scraperRuns.started_at, stuckCutoff)));
 
     // Prevent concurrent runs
     const [running] = await db
