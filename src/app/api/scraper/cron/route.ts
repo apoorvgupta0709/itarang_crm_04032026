@@ -2,7 +2,7 @@ import { db } from '@/lib/db';
 import { scraperSchedules, scraperRuns } from '@/lib/db/schema';
 import { generateId, successResponse } from '@/lib/api-utils';
 import { runDealerScraper } from '@/lib/dealer-scraper-service';
-import { eq } from 'drizzle-orm';
+import { and, eq, lt } from 'drizzle-orm';
 
 export const maxDuration = 300;
 
@@ -32,9 +32,12 @@ function isDue(schedule: {
 }
 
 export const GET = async (req: Request) => {
-    // Verify cron secret (Vercel sets CRON_SECRET automatically)
+    // Verify cron secret (Vercel sets CRON_SECRET automatically).
+    // Fail-closed: if CRON_SECRET is not configured the endpoint rejects all requests
+    // rather than becoming open to anyone. Use '||' not '&&' to avoid the fail-open trap
+    // where an unset env var bypasses auth entirely.
     const authHeader = req.headers.get('authorization');
-    if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    if (!process.env.CRON_SECRET || authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
         return new Response('Unauthorized', { status: 401 });
     }
 
@@ -51,6 +54,17 @@ export const GET = async (req: Request) => {
     if (!isDue(schedule)) {
         return successResponse({ message: 'Not due yet', triggered: false });
     }
+
+    // Auto-recover stuck runs before checking for concurrent runs (same logic as run/route.ts).
+    const stuckCutoff = new Date(Date.now() - maxDuration * 1000);
+    await db
+        .update(scraperRuns)
+        .set({
+            status: 'failed',
+            completed_at: new Date(),
+            error_message: 'Run timed out — auto-recovered after serverless function termination',
+        })
+        .where(and(eq(scraperRuns.status, 'running'), lt(scraperRuns.started_at, stuckCutoff)));
 
     // Check if a run is already in progress
     const [running] = await db
