@@ -69,7 +69,9 @@ export function normalizePhone(raw: string | undefined | null): string | null {
     if (digits.length === 10) return `+91${digits}`;
     if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
     if (digits.length === 11 && digits.startsWith('0')) return `+91${digits.slice(1)}`;
-    if (digits.length > 10) return `+91${digits.slice(-10)}`;
+    // Reject anything that doesn't match a known Indian phone format.
+    // The old fallback (`digits.slice(-10)`) silently turned corrupt data like
+    // '98765432109876' into a plausible phone number, causing false dedup matches.
     return null;
 }
 
@@ -103,27 +105,43 @@ function isDirectoryUrl(url: string): boolean {
 // ---------------------------------------------------------------------------
 // Deep scrape a single directory page for dealer records
 // ---------------------------------------------------------------------------
+// Serialize DealerExtractSchema once at module load. Zod 4 ships z.toJSONSchema();
+// passing the raw Zod object to the Firecrawl API causes the LLM to receive an
+// unreadable internal representation and ignore the schema entirely.
+const DEALER_EXTRACT_JSON_SCHEMA = (() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const raw = (z as any).toJSONSchema(DealerExtractSchema) as Record<string, unknown>;
+    // Remove the $schema meta-key — some API endpoints reject it.
+    const { $schema: _drop, ...jsonSchema } = raw;
+    return jsonSchema;
+})();
+
 export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[]> {
     const app = getClient();
     const results: RawDealerRecord[] = [];
 
     try {
-        const scrapeResponse = await app.scrapeUrl(url, {
+        // Use app.scrape() (Firecrawl v4 method) — NOT app.scrapeUrl() which is the
+        // frozen v1 method and only accepts string formats, silently ignoring JSON extraction.
+        // Cast needed because the SDK's TypeScript types don't expose the v4 scrape() method.
+        const scrapeResponse = await (app as unknown as {
+            scrape: (url: string, opts: Record<string, unknown>) => Promise<Record<string, unknown>>;
+        }).scrape(url, {
             formats: [
                 {
                     type: 'json',
-                    schema: DealerExtractSchema,
+                    schema: DEALER_EXTRACT_JSON_SCHEMA,
                     prompt:
                         'This is a business directory or listing page. Extract EVERY dealer, ' +
                         'distributor, wholesaler, or supplier listed on this page. For each, ' +
                         'extract: business name, phone number, city, state, email, GST number, ' +
                         'business type (dealer/distributor/wholesaler/retailer), products they sell, ' +
                         'and website. Extract ALL listings, not just the first few.',
-                } as { type: 'json'; schema: typeof DealerExtractSchema; prompt: string },
+                },
             ],
         });
 
-        const jsonData = (scrapeResponse as { json?: unknown }).json;
+        const jsonData = scrapeResponse.json;
         console.log(
             `[Firecrawl][Trace] Scrape response for "${url.slice(0, 80)}": ` +
             `keys=${Object.keys(scrapeResponse as object).join(', ')}`
@@ -228,6 +246,9 @@ export async function searchDealers(query: string): Promise<SearchResult> {
 
 // ---------------------------------------------------------------------------
 // Helper: deduplicate and add record to the collection
+// Only deduplicates by phone within a single scrape run (in-memory).
+// URL-level dedup is handled by scrapedPageUrls in scrapeAllDealers.
+// DB-level dedup (phone, name+city, source URL) runs in dealer-scraper-service.
 // ---------------------------------------------------------------------------
 function addRecordIfNew(
     record: RawDealerRecord,

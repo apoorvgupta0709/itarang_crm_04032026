@@ -52,6 +52,39 @@ async function findExistingByPhone(phone: string): Promise<string | null> {
     return crmLead ? crmLead.id : null;
 }
 
+async function findExistingByNameCity(
+    dealerName: string,
+    city: string
+): Promise<string | null> {
+    const [sdl] = await db
+        .select({ id: scrapedDealerLeads.id })
+        .from(scrapedDealerLeads)
+        .where(
+            sql`LOWER(${scrapedDealerLeads.dealer_name}) = LOWER(${dealerName})
+            AND LOWER(${scrapedDealerLeads.location_city}) = LOWER(${city})`
+        )
+        .limit(1);
+
+    return sdl ? sdl.id : null;
+}
+
+async function findExistingByUrl(sourceUrl: string): Promise<string | null> {
+    // Normalise: strip query params AND trailing slash for comparison.
+    // The SQL must apply the same trailing-slash strip to the stored value, otherwise
+    // 'https://x.com/page/' (stored) ≠ 'https://x.com/page' (input) — false miss.
+    const normalized = sourceUrl.split('?')[0].toLowerCase().replace(/\/$/, '');
+
+    const [sdl] = await db
+        .select({ id: scrapedDealerLeads.id })
+        .from(scrapedDealerLeads)
+        .where(
+            sql`REGEXP_REPLACE(LOWER(SPLIT_PART(${scrapedDealerLeads.source_url}, '?', 1)), '/$', '')
+                = ${normalized}`
+        )
+        .limit(1);
+
+    return sdl ? sdl.id : null;
+}
 
 // ---------------------------------------------------------------------------
 // Main orchestration function (runs fully async in background)
@@ -94,9 +127,13 @@ export async function runDealerScraper(runId: string): Promise<void> {
             })
             .where(eq(scraperRuns.id, runId));
 
-        // 2. For each record: dedup → save or log
+        // 2. For each record: enrich → dedup → save or log
+        // Enrichment MUST run before dedup so city aliases (e.g. 'bangalore' → 'Bengaluru')
+        // are normalised before the DB comparison. The DB stores enriched cities, so comparing
+        // raw cities against it produces false misses for any aliased city.
         for (const record of records) {
-            const skipResult = await checkDuplicate(record);
+            const enriched = enrichRecord(record);
+            const skipResult = await checkDuplicate(enriched);
 
             if (skipResult) {
                 // Duplicate found – log and skip
@@ -112,8 +149,7 @@ export async function runDealerScraper(runId: string): Promise<void> {
                 });
                 duplicatesSkipped++;
             } else {
-                // New lead – enrich and persist
-                const enriched = enrichRecord(record);
+                // New lead – persist (already enriched above)
                 await db.insert(scrapedDealerLeads).values({
                     id: await generateId('SDL', scrapedDealerLeads),
                     scraper_run_id: runId,
