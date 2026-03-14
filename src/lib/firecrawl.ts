@@ -124,6 +124,10 @@ export async function scrapeDirectoryPage(url: string): Promise<RawDealerRecord[
         });
 
         const jsonData = (scrapeResponse as { json?: unknown }).json;
+        console.log(
+            `[Firecrawl][Trace] Scrape response for "${url.slice(0, 80)}": ` +
+            `keys=${Object.keys(scrapeResponse as object).join(', ')}`
+        );
         if (!jsonData) {
             console.warn(`[Firecrawl] No JSON in scrape response for "${url.slice(0, 80)}". Keys: ${Object.keys(scrapeResponse as object).join(', ')}`);
             return results;
@@ -170,6 +174,13 @@ interface SearchResult {
     discoveredUrls: string[];
 }
 
+type FirecrawlSearchResponse = {
+    data?: unknown[];
+    web?: unknown[];
+    success?: boolean;
+    error?: string;
+};
+
 export async function searchDealers(query: string): Promise<SearchResult> {
     const app = getClient();
     const records: RawDealerRecord[] = [];
@@ -178,12 +189,20 @@ export async function searchDealers(query: string): Promise<SearchResult> {
     try {
         // Use search purely for URL discovery — JSON extraction is not
         // supported in search scrapeOptions and causes the call to fail.
-        const searchResponse = await app.search(query, { limit: 8 });
+        const searchResponse = await app.search(query, { limit: 8 }) as FirecrawlSearchResponse;
 
-        const webResults = (searchResponse as { web?: unknown[] }).web ?? [];
+        // Firecrawl v4 SDK returns results in `data`. Keep `web` fallback for legacy payloads.
+        const webResults = searchResponse.data ?? searchResponse.web ?? [];
+
+        if (searchResponse.success === false || searchResponse.error) {
+            console.warn(
+                `[Firecrawl][Trace] Search API warning for "${query.slice(0, 50)}": ` +
+                `${searchResponse.error ?? 'success=false'}`
+            );
+        }
 
         console.log(
-            `[Firecrawl] Search "${query.slice(0, 50)}": ${webResults.length} web results`
+            `[Firecrawl][Trace] Search "${query.slice(0, 50)}": ${webResults.length} web results`
         );
 
         for (const item of webResults) {
@@ -194,6 +213,11 @@ export async function searchDealers(query: string): Promise<SearchResult> {
                 discoveredUrls.push(pageUrl);
             }
         }
+
+        console.log(
+            `[Firecrawl][Trace] Query "${query.slice(0, 50)}" discovered URLs: ` +
+            `${discoveredUrls.slice(0, 5).join(', ') || 'none'}`
+        );
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[Firecrawl] Error searching "${query}":`, msg);
@@ -209,16 +233,14 @@ function addRecordIfNew(
     record: RawDealerRecord,
     allRecords: RawDealerRecord[],
     seenPhones: Set<string>,
-    seenUrls: Set<string>,
 ): boolean {
     const phoneKey = record.phone;
-    const urlKey = record.source_url ? record.source_url.split('?')[0] : null;
 
+    // Deduplicate by phone only. Multiple dealers can legitimately share a source URL
+    // (directory/listing pages), so URL-based dedup drops valid leads.
     if (phoneKey && seenPhones.has(phoneKey)) return false;
-    if (urlKey && seenUrls.has(urlKey)) return false;
 
     if (phoneKey) seenPhones.add(phoneKey);
-    if (urlKey) seenUrls.add(urlKey);
 
     allRecords.push(record);
     return true;
@@ -236,7 +258,6 @@ export async function scrapeAllDealers(customQueries?: string[]): Promise<{
     const queries = customQueries ?? DEALER_SEARCH_QUERIES;
     const allRecords: RawDealerRecord[] = [];
     const seenPhones = new Set<string>();
-    const seenUrls = new Set<string>();
     const urlsToScrape = new Set<string>();
     const scrapedPageUrls = new Set<string>();
 
@@ -248,7 +269,7 @@ export async function scrapeAllDealers(customQueries?: string[]): Promise<{
 
         // Add any inline extracted records
         for (const record of records) {
-            addRecordIfNew(record, allRecords, seenPhones, seenUrls);
+            addRecordIfNew(record, allRecords, seenPhones);
         }
 
         // Collect ALL discovered URLs for Phase 2 scraping
@@ -298,7 +319,7 @@ export async function scrapeAllDealers(customQueries?: string[]): Promise<{
         const deepResults = await scrapeDirectoryPage(url);
         let added = 0;
         for (const record of deepResults) {
-            if (addRecordIfNew(record, allRecords, seenPhones, seenUrls)) {
+            if (addRecordIfNew(record, allRecords, seenPhones)) {
                 added++;
             }
         }
