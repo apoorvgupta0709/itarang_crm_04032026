@@ -257,6 +257,8 @@ function addRecordIfNew(
 ): boolean {
     const phoneKey = record.phone;
 
+    // Deduplicate by phone only. Multiple dealers can legitimately share a source URL
+    // (directory/listing pages), so URL-based dedup drops valid leads.
     if (phoneKey && seenPhones.has(phoneKey)) return false;
 
     if (phoneKey) seenPhones.add(phoneKey);

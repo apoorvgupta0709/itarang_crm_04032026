@@ -3,7 +3,7 @@
  *
  * Called fire-and-forget from the API route. Handles:
  *   1. Running Firecrawl searches
- *   2. Three-layer deduplication (phone / name+city / source URL)
+ *   2. Phone-based deduplication
  *   3. Persisting new leads and dedup logs
  *   4. Updating scraper_runs status on finish
  */
@@ -17,9 +17,9 @@ import {
     scraperSearchQueries,
 } from '@/lib/db/schema';
 import { generateId } from '@/lib/api-utils';
-import { scrapeAllDealers, normalizePhone } from '@/lib/firecrawl';
+import { scrapeAllDealers } from '@/lib/firecrawl';
 import { enrichRecord } from '@/lib/scraper-enrichment';
-import { eq, or, sql } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import type { RawDealerRecord } from '@/types/scraper';
 
 // ---------------------------------------------------------------------------
@@ -188,8 +188,9 @@ export async function runDealerScraper(runId: string): Promise<void> {
             `[Scraper] Run ${runId} complete. ` +
             `Found: ${totalFound}, Saved: ${newLeadsSaved}, Skipped: ${duplicatesSkipped}`
         );
-    } catch (err: any) {
-        console.error(`[Scraper] Run ${runId} failed:`, err.message);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[Scraper] Run ${runId} failed:`, message);
 
         await db
             .update(scraperRuns)
@@ -199,7 +200,7 @@ export async function runDealerScraper(runId: string): Promise<void> {
                 total_found: totalFound,
                 new_leads_saved: newLeadsSaved,
                 duplicates_skipped: duplicatesSkipped,
-                error_message: err.message ?? 'Unknown error',
+                error_message: message,
             })
             .where(eq(scraperRuns.id, runId));
     }
@@ -210,30 +211,18 @@ export async function runDealerScraper(runId: string): Promise<void> {
 // ---------------------------------------------------------------------------
 
 interface DedupResult {
-    reason: 'duplicate_phone' | 'duplicate_name_location' | 'duplicate_url';
+    reason: 'duplicate_phone';
     matchedId: string;
 }
 
 async function checkDuplicate(
     record: RawDealerRecord
 ): Promise<DedupResult | null> {
-    // Layer 1: phone
-    if (record.phone) {
-        const matchId = await findExistingByPhone(record.phone);
-        if (matchId) return { reason: 'duplicate_phone', matchedId: matchId };
-    }
+    // Deduplicate by phone only.
+    if (!record.phone) return null;
 
-    // Layer 2: dealer_name + city
-    if (record.dealer_name && record.city) {
-        const matchId = await findExistingByNameCity(record.dealer_name, record.city);
-        if (matchId) return { reason: 'duplicate_name_location', matchedId: matchId };
-    }
-
-    // Layer 3: source URL
-    if (record.source_url) {
-        const matchId = await findExistingByUrl(record.source_url);
-        if (matchId) return { reason: 'duplicate_url', matchedId: matchId };
-    }
+    const matchId = await findExistingByPhone(record.phone);
+    if (matchId) return { reason: 'duplicate_phone', matchedId: matchId };
 
     return null;
 }
